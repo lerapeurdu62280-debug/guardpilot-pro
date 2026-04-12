@@ -4,7 +4,12 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 const { analyzeFile } = require('./scanner');
-const { DANGEROUS_EXTENSIONS_IN_TEMP } = require('./threats');
+const { DANGEROUS_EXTENSIONS_IN_TEMP, WHITELIST_PATHS } = require('./threats');
+
+function isWhitelisted(p) {
+  const lower = (p||'').toLowerCase();
+  return WHITELIST_PATHS.some(w => lower.includes(w.toLowerCase()));
+}
 
 let watchers = [];
 let active   = false;
@@ -37,9 +42,10 @@ function startRealtime(threatCallback, activityCallback) {
         if (onActivity) onActivity({ event: eventType, path: fullPath, time: Date.now() });
 
         // Immediate alert for dangerous extensions
-        if (DANGEROUS_EXTENSIONS_IN_TEMP.includes(ext)) {
+        if (DANGEROUS_EXTENSIONS_IN_TEMP.includes(ext) && !isWhitelisted(fullPath)) {
           setTimeout(() => {
             if (!fs.existsSync(fullPath)) return;
+            if (isWhitelisted(fullPath)) return;
             const threats = analyzeFile(fullPath);
             if (threats.length > 0 && onThreat) {
               for (const t of threats) onThreat({ ...t, realtime: true });

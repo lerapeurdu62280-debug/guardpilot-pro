@@ -7,7 +7,15 @@ const crypto  = require('crypto');
 const { execSync, exec } = require('child_process');
 const { KNOWN_HASHES, SUSPICIOUS_STRINGS, SUSPICIOUS_PATHS,
         DANGEROUS_EXTENSIONS_IN_TEMP, RANSOMWARE_EXTENSIONS,
-        SUSPICIOUS_PROCESS_PATTERNS, SUSPICIOUS_IP_RANGES, SAFE_PATHS } = require('./threats');
+        SUSPICIOUS_PROCESS_PATTERNS, SUSPICIOUS_IP_RANGES, SAFE_PATHS,
+        WHITELIST_PATHS, WHITELIST_HASHES } = require('./threats');
+
+// Check if a path is whitelisted (known legitimate software)
+function isWhitelisted(filePath) {
+  if (!filePath) return false;
+  const lower = filePath.toLowerCase();
+  return WHITELIST_PATHS.some(w => lower.includes(w.toLowerCase()));
+}
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 function sha256(filePath) {
@@ -79,6 +87,9 @@ function psJSON(cmd, timeout = 10000) {
 
 // ── Scan a single file ────────────────────────────────────────────────────────
 function analyzeFile(filePath) {
+  // Skip whitelisted apps immediately
+  if (isWhitelisted(filePath)) return [];
+
   const threats = [];
   const ext = path.extname(filePath).toLowerCase();
   let stat;
@@ -88,6 +99,7 @@ function analyzeFile(filePath) {
 
   // 1. Hash check
   const hash = sha256(filePath);
+  if (hash && WHITELIST_HASHES.has(hash)) return []; // Safe hash, skip
   if (hash && KNOWN_HASHES.has(hash)) {
     threats.push({ type: 'KNOWN_MALWARE', severity: 'CRITICAL',
       desc: `Malware connu détecté (hash: ${hash.slice(0,16)}...)`, file: filePath });
@@ -327,6 +339,7 @@ function auditProcesses() {
 
     for (const p of procs) {
       if (!p || !p.Name || !p.Path) continue;
+      if (isWhitelisted(p.Path) || isWhitelisted(p.Name)) continue; // Skip known safe apps
       const name = p.Name.toLowerCase();
       const procPath = (p.Path || '').toLowerCase();
 

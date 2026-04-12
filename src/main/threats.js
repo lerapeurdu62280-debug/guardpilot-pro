@@ -109,6 +109,37 @@ const SAFE_PATHS = [
   'C:\\Users\\Admin\\AppData\\Local\\Microsoft\\',
 ];
 
+// Whitelisted applications — known legitimate software (no false positives)
+const WHITELIST_PATHS = [
+  // Gaming
+  'fivem', 'gta', 'steam', 'epicgames', 'epic games', 'ubisoft', 'rockstar',
+  'battlenet', 'battle.net', 'origin', 'eadesktop', 'ea desktop',
+  'riotgames', 'riot games', 'leagueoflegends', 'valorant', 'minecraft',
+  'curseforge', 'overwolf', 'playnite',
+  // Browsers
+  'chrome', 'firefox', 'opera', 'brave', 'msedge', 'vivaldi',
+  // Communication
+  'discord', 'slack', 'teams', 'zoom', 'skype', 'telegram', 'whatsapp',
+  // Dev tools
+  'vscode', 'visual studio', 'nodejs', 'python', 'git', 'github', 'jetbrains',
+  // System / utilities
+  'anydesk', 'teamviewer', 'virtualbox', 'vmware', 'winrar', '7-zip',
+  'vlc', 'obs', 'obs studio', 'streamlabs',
+  'nordvpn', 'expressvpn', 'avast', 'malwarebytes',
+  'itunes', 'spotify', 'onedrive',
+  'altserver', 'sideloadly', 'icloud',
+  'minitool', 'ccleaner', 'cpu-z', 'hwinfo', 'aida64',
+  'nvidia', 'amd', 'intel',
+  'autohotkey', 'ahk',
+  // SOS INFO LUDO own software
+  'repairpilot', 'recoverypilot', 'stockpilot', 'diagpilot', 'cleanpilot', 'guardpilot',
+];
+
+// Whitelisted file hashes (known safe files that might trigger entropy/pattern checks)
+const WHITELIST_HASHES = new Set([
+  // Add specific safe file hashes here if needed
+]);
+
 // File extensions that should never be in temp folders
 const DANGEROUS_EXTENSIONS_IN_TEMP = ['.exe', '.dll', '.bat', '.ps1', '.vbs', '.js', '.scr', '.pif', '.com', '.hta'];
 
@@ -130,4 +161,6 @@ module.exports = {
   SAFE_PATHS,
   DANGEROUS_EXTENSIONS_IN_TEMP,
   RANSOMWARE_EXTENSIONS,
+  WHITELIST_PATHS,
+  WHITELIST_HASHES,
 };
