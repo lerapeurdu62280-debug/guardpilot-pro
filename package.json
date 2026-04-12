@@ -1,0 +1,21 @@
+{
+  "name": "guardpilot-pro",
+  "version": "1.0.0",
+  "description": "GuardPilot Pro — Antivirus & Anti-Malware nouvelle génération",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win --config electron-builder.client.json",
+    "build:owner": "electron-builder --win --config electron-builder.owner.json"
+  },
+  "author": "S.O.S INFO LUDO — Ludovic Tourniquet",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "dependencies": {
+    "electron-store": "^8.2.0"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.0.0"
+  }
+}
