@@ -1,6 +1,6 @@
 {
   "name": "guardpilot-pro",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "GuardPilot Pro — Antivirus & Anti-Malware nouvelle génération",
   "main": "src/main/main.js",
   "scripts": {
