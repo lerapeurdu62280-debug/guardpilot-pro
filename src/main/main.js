@@ -19,8 +19,8 @@ try {
 
 const store = Store ? new Store({ encryptionKey: process.env.STORE_KEY || 'GRDP2026SOSINFOLUDO' }) : { get:(k,d)=>d, set:()=>{}, delete:()=>{} };
 
-let BUILD_VARIANT = 'client';
-try { BUILD_VARIANT = require('../../package.json').buildVariant || 'client'; } catch(e) {}
+let BUILD_VARIANT = process.env.BUILD_VARIANT || 'client';
+try { BUILD_VARIANT = require('../../package.json').buildVariant || BUILD_VARIANT; } catch(e) {}
 
 const { updateSignatures, getSignaturesInfo } = require('./updater');
 
