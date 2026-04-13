@@ -12,11 +12,13 @@ const store = Store ? new Store({ encryptionKey: 'GRDP2026SOSINFOLUDO' }) : { ge
 let BUILD_VARIANT = 'client';
 try { BUILD_VARIANT = require('../../package.json').buildVariant || 'client'; } catch(e) {}
 
-// Lazy-load scanner to avoid startup delay
+// Lazy-load modules to avoid startup delay
 let scanner = null;
 let realtime = null;
-function getScanner() { if (!scanner) scanner = require('./scanner'); return scanner; }
-function getRealtime() { if (!realtime) realtime = require('./realtime'); return realtime; }
+let advanced = null;
+function getScanner()  { if (!scanner)  scanner  = require('./scanner');        return scanner; }
+function getRealtime() { if (!realtime) realtime = require('./realtime');       return realtime; }
+function getAdvanced() { if (!advanced) advanced = require('./audit_advanced'); return advanced; }
 
 // ── License ───────────────────────────────────────────────────────────────────
 const LICENSE_SECRET = 'SOSINFOLUDO2026GP';
@@ -139,6 +141,48 @@ ipcMain.handle('delete-quarantine', (_, quarPath) => {
     store.set('quarantine', q);
   }
   return res;
+});
+
+// ── Advanced Audit IPC ────────────────────────────────────────────────────────
+ipcMain.handle('audit-tasks',      async () => ({ success:true, threats: getAdvanced().auditScheduledTasks() }));
+ipcMain.handle('audit-services',   async () => ({ success:true, threats: getAdvanced().auditServices() }));
+ipcMain.handle('audit-wmi',        async () => ({ success:true, threats: getAdvanced().auditWMISubscriptions() }));
+ipcMain.handle('audit-hosts',      async () => ({ success:true, threats: getAdvanced().auditHostsFile() }));
+ipcMain.handle('audit-ifeo',       async () => ({ success:true, threats: getAdvanced().auditIFEO() }));
+ipcMain.handle('audit-appinit',    async () => ({ success:true, threats: getAdvanced().auditAppInitDLLs() }));
+ipcMain.handle('audit-extensions', async () => ({ success:true, threats: getAdvanced().auditBrowserExtensions() }));
+ipcMain.handle('audit-shadows',    async () => ({ success:true, threats: getAdvanced().auditShadowCopies() }));
+ipcMain.handle('audit-advanced',   async () => {
+  const adv = getAdvanced();
+  return { success:true, ...adv.runAdvancedAudit() };
+});
+
+// Delete public malware folder
+ipcMain.handle('delete-public-malware', async (_, folderPath) => {
+  try {
+    require('child_process').execSync(`powershell -NonInteractive -Command "Remove-Item '${folderPath.replace(/'/g,"''")}' -Recurse -Force"`, { timeout: 10000 });
+    return { success: true };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
+// Remove scheduled task
+ipcMain.handle('remove-scheduled-task', async (_, { taskName, taskPath }) => {
+  try {
+    const tn = (taskName || '').replace(/'/g, "''");
+    const tp = (taskPath || '\\').replace(/'/g, "''");
+    require('child_process').execSync(`powershell -NonInteractive -Command "Unregister-ScheduledTask -TaskName '${tn}' -TaskPath '${tp}' -Confirm:\\$false"`, { timeout: 10000 });
+    return { success: true };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
+// Remove WMI subscription
+ipcMain.handle('remove-wmi-subscription', async (_, { wmiClass, wmiName }) => {
+  try {
+    const cn = (wmiClass || '').replace(/'/g, "''");
+    const nn = (wmiName || '').replace(/'/g, "''");
+    require('child_process').execSync(`powershell -NonInteractive -Command "Get-WMIObject -Namespace root\\\\subscription -Class ${cn} | Where-Object {$_.Name -eq '${nn}'} | Remove-WmiObject"`, { timeout: 10000 });
+    return { success: true };
+  } catch(e) { return { success: false, error: e.message }; }
 });
 
 // ── Fix IPC ───────────────────────────────────────────────────────────────────

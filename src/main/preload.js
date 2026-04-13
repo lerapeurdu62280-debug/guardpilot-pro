@@ -27,6 +27,19 @@ contextBridge.exposeInMainWorld('gp', {
   restoreQuarantine:(opts)  => ipcRenderer.invoke('restore-quarantine', opts),
   deleteQuarantine: (p)     => ipcRenderer.invoke('delete-quarantine', p),
 
+  auditTasks:       ()      => ipcRenderer.invoke('audit-tasks'),
+  auditServices:    ()      => ipcRenderer.invoke('audit-services'),
+  auditWMI:         ()      => ipcRenderer.invoke('audit-wmi'),
+  auditHosts:       ()      => ipcRenderer.invoke('audit-hosts'),
+  auditIFEO:        ()      => ipcRenderer.invoke('audit-ifeo'),
+  auditAppInit:     ()      => ipcRenderer.invoke('audit-appinit'),
+  auditExtensions:  ()      => ipcRenderer.invoke('audit-extensions'),
+  auditShadows:     ()      => ipcRenderer.invoke('audit-shadows'),
+  auditAdvanced:    ()      => ipcRenderer.invoke('audit-advanced'),
+  deletePublicMalware: (p)  => ipcRenderer.invoke('delete-public-malware', p),
+  removeScheduledTask:(opts)=> ipcRenderer.invoke('remove-scheduled-task', opts),
+  removeWMISubscription:(o) => ipcRenderer.invoke('remove-wmi-subscription', o),
+
   removeAutorun:    (opts)  => ipcRenderer.invoke('remove-autorun', opts),
   killProcess:      (pid)   => ipcRenderer.invoke('kill-process', pid),
 

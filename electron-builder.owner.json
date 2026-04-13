@@ -1,0 +1,22 @@
+{
+  "appId": "fr.sosinfoludo.guardpilot",
+  "productName": "GuardPilot Pro",
+  "artifactName": "GuardPilot_Pro_Owner_${version}.exe",
+  "extraMetadata": { "buildVariant": "owner" },
+  "directories": { "output": "dist/owner" },
+  "files": ["src/**/*", "assets/**/*", "package.json"],
+  "win": {
+    "target": [{ "target": "nsis", "arch": ["x64"] }],
+    "icon": "assets/icon.ico",
+    "requestedExecutionLevel": "requireAdministrator"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "GuardPilot Pro",
+    "installerLanguages": ["fr"],
+    "language": "1036"
+  }
+}

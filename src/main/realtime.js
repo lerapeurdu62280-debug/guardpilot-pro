@@ -42,6 +42,7 @@ function startRealtime(threatCallback, activityCallback) {
         if (onActivity) onActivity({ event: eventType, path: fullPath, time: Date.now() });
 
         // Immediate alert for dangerous extensions
+        // Only alert for dangerous extensions — realtime already watches suspicious dirs
         if (DANGEROUS_EXTENSIONS_IN_TEMP.includes(ext) && !isWhitelisted(fullPath)) {
           setTimeout(() => {
             if (!fs.existsSync(fullPath)) return;
@@ -49,17 +50,8 @@ function startRealtime(threatCallback, activityCallback) {
             const threats = analyzeFile(fullPath);
             if (threats.length > 0 && onThreat) {
               for (const t of threats) onThreat({ ...t, realtime: true });
-            } else if (onThreat) {
-              // Still flag suspicious extension even if no pattern match
-              onThreat({
-                type: 'REALTIME_ALERT',
-                severity: 'MEDIUM',
-                desc: `Nouveau fichier exécutable détecté: ${filename}`,
-                file: fullPath,
-                realtime: true,
-                timestamp: Date.now(),
-              });
             }
+            // No generic "executable detected" alert — too many false positives on legit installers
           }, 500);
         }
       });

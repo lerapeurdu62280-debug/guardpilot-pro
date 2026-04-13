@@ -101,17 +101,21 @@ function renderShell() {
 }
 
 const PAGES = [
-  { id:'dashboard',    icon:'🏠', label:'Tableau de bord',  section:'PRINCIPAL' },
-  { id:'scan',         icon:'🔍', label:'Scanner',           section:'PROTECTION' },
+  { id:'dashboard',    icon:'🏠', label:'Tableau de bord',       section:'PRINCIPAL' },
+  { id:'scan',         icon:'🔍', label:'Scanner',               section:'PROTECTION' },
   { id:'realtime',     icon:'⚡', label:'Protection temps réel', section:'PROTECTION' },
-  { id:'defender',     icon:'🪟', label:'Windows Defender',  section:'PROTECTION' },
-  { id:'registry',     icon:'📋', label:'Registre Windows',  section:'ANALYSE' },
-  { id:'processes',    icon:'⚙️', label:'Processus',          section:'ANALYSE' },
-  { id:'network',      icon:'🌐', label:'Réseau',             section:'ANALYSE' },
-  { id:'vulns',        icon:'🔐', label:'Vulnérabilités',     section:'ANALYSE' },
-  { id:'quarantine',   icon:'🔒', label:'Quarantaine',        section:'GESTION', badge:'qtCount' },
-  { id:'history',      icon:'📅', label:'Historique scans',   section:'GESTION' },
-  { id:'license',      icon:'🔑', label:'Licence',            section:'COMPTE' },
+  { id:'defender',     icon:'🪟', label:'Windows Defender',      section:'PROTECTION' },
+  { id:'registry',     icon:'📋', label:'Registre Windows',      section:'ANALYSE' },
+  { id:'processes',    icon:'⚙️', label:'Processus',             section:'ANALYSE' },
+  { id:'network',      icon:'🌐', label:'Réseau',                section:'ANALYSE' },
+  { id:'tasks',        icon:'📆', label:'Tâches planifiées',     section:'ANALYSE' },
+  { id:'services',     icon:'🔧', label:'Services Windows',      section:'ANALYSE' },
+  { id:'extensions',   icon:'🧩', label:'Extensions navigateurs',section:'ANALYSE' },
+  { id:'advanced',     icon:'🔬', label:'Audit avancé',          section:'ANALYSE' },
+  { id:'vulns',        icon:'🔐', label:'Vulnérabilités',        section:'ANALYSE' },
+  { id:'quarantine',   icon:'🔒', label:'Quarantaine',           section:'GESTION', badge:'qtCount' },
+  { id:'history',      icon:'📅', label:'Historique scans',      section:'GESTION' },
+  { id:'license',      icon:'🔑', label:'Licence',               section:'COMPTE' },
 ];
 
 function renderSidebar() {
@@ -180,6 +184,10 @@ function renderPage(page) {
     case 'registry':   renderRegistry(); break;
     case 'processes':  renderProcesses(); break;
     case 'network':    renderNetwork(); break;
+    case 'tasks':      renderTasks(); break;
+    case 'services':   renderServices(); break;
+    case 'extensions': renderExtensions(); break;
+    case 'advanced':   renderAdvanced(); break;
     case 'vulns':      renderVulns(); break;
     case 'quarantine': renderQuarantine(); break;
     case 'history':    renderHistory(); break;
@@ -919,6 +927,214 @@ async function deactivateLic() {
   await gp.deactivateLicense();
   State.license = await gp.checkLicense();
   renderLicense();
+}
+
+// ── Scheduled Tasks ───────────────────────────────────────────────────────────
+async function renderTasks() {
+  setContent(`<div class="loading"><div class="spinner"></div>Analyse des tâches planifiées...</div>`);
+  const res = await gp.auditTasks();
+  const threats = res.threats || [];
+  setContent(`
+    <div class="topbar">
+      <h1>📆 Tâches planifiées</h1>
+      <button class="btn btn-ghost" onclick="renderTasks()">↺ Actualiser</button>
+    </div>
+    <div class="panel">
+      <div style="padding:12px 18px;font-size:12px;color:var(--text2)">
+        Détection de tâches planifiées malveillantes: emplacements dangereux (Temp/Public), abus d'outils système (certutil, mshta, wscript, regsvr32...) avec téléchargement ou exécution de code encodé.
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">🚨 Tâches suspectes détectées</div>
+        <span class="badge ${threats.length>0?'badge-red':'badge-green'}">${threats.length}</span>
+      </div>
+      ${threats.length === 0
+        ? '<div style="padding:32px;text-align:center;color:var(--green);font-weight:700">✅ Aucune tâche planifiée suspecte</div>'
+        : `<div class="threat-list">${threats.map(t => `
+            <div class="threat-item ${severityClass(t.severity)}">
+              <span class="threat-icon">${severityIcon(t.severity)}</span>
+              <div class="threat-info">
+                <div class="threat-desc">${severityBadge(t.severity)} ${escHtml(t.desc)}</div>
+                <div class="threat-file">${escHtml(t.file||'')} ${t.taskName?`<span style="color:var(--text3)"> — Tâche: ${escHtml(t.taskName)}</span>`:''}</div>
+              </div>
+              ${t.canFix && t.taskName ? `
+                <button class="btn btn-danger btn-sm" onclick="removeTask('${escHtml(t.taskName.replace(/'/g,"&#39;"))}','${escHtml((t.taskPath||'\\\\').replace(/'/g,"&#39;"))}')">
+                  🗑 Supprimer
+                </button>` : ''}
+            </div>
+          `).join('')}</div>`}
+    </div>
+  `);
+}
+
+async function removeTask(name, taskPath) {
+  if (!confirm(`Supprimer la tâche planifiée "${name}" ?`)) return;
+  const res = await gp.removeScheduledTask({ taskName: name, taskPath });
+  if (res.success) { toast('Tâche planifiée supprimée', 'success'); renderTasks(); }
+  else toast(res.error || 'Erreur', 'error');
+}
+
+// ── Services ──────────────────────────────────────────────────────────────────
+async function renderServices() {
+  setContent(`<div class="loading"><div class="spinner"></div>Analyse des services Windows...</div>`);
+  const res = await gp.auditServices();
+  const threats = res.threats || [];
+  setContent(`
+    <div class="topbar">
+      <h1>🔧 Services Windows</h1>
+      <button class="btn btn-ghost" onclick="renderServices()">↺ Actualiser</button>
+    </div>
+    <div class="panel">
+      <div style="padding:12px 18px;font-size:12px;color:var(--text2)">
+        Détection de services installés depuis des emplacements suspects (Temp, Public, AppData\\Roaming).
+        Les malwares s'installent souvent comme service Windows pour démarrer automatiquement.
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">🔧 Services suspects</div>
+        <span class="badge ${threats.length>0?'badge-red':'badge-green'}">${threats.length}</span>
+      </div>
+      ${threats.length === 0
+        ? '<div style="padding:32px;text-align:center;color:var(--green);font-weight:700">✅ Aucun service suspect détecté</div>'
+        : `<div class="threat-list">${threats.map(t => renderThreatItem(t, true)).join('')}</div>`}
+    </div>
+  `);
+}
+
+// ── Browser Extensions ────────────────────────────────────────────────────────
+async function renderExtensions() {
+  setContent(`<div class="loading"><div class="spinner"></div>Analyse des extensions navigateurs...</div>`);
+  const res = await gp.auditExtensions();
+  const threats = res.threats || [];
+  setContent(`
+    <div class="topbar">
+      <h1>🧩 Extensions navigateurs</h1>
+      <button class="btn btn-ghost" onclick="renderExtensions()">↺ Actualiser</button>
+    </div>
+    <div class="panel">
+      <div style="padding:12px 18px;font-size:12px;color:var(--text2)">
+        Analyse des extensions Chrome, Edge, Brave et Opera. Détection d'extensions avec permissions
+        dangereuses: accès à toutes les URLs, blocage réseau, messagerie native, accès clipboard,
+        proxy, debugger. Ces permissions permettent l'espionnage, le vol de mots de passe ou le détournement de trafic.
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">🧩 Extensions suspectes</div>
+        <span class="badge ${threats.length>0?'badge-amber':'badge-green'}">${threats.length}</span>
+      </div>
+      ${threats.length === 0
+        ? '<div style="padding:32px;text-align:center;color:var(--green);font-weight:700">✅ Aucune extension suspecte détectée</div>'
+        : `<div class="threat-list">${threats.map(t => `
+            <div class="threat-item ${severityClass(t.severity)}">
+              <span class="threat-icon">${severityIcon(t.severity)}</span>
+              <div class="threat-info">
+                <div class="threat-desc">${severityBadge(t.severity)} ${escHtml(t.desc)}</div>
+                <div class="threat-file">${escHtml(t.file||'')}</div>
+                ${t.extId ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">ID: ${escHtml(t.extId)} — ${escHtml(t.browser||'')}</div>` : ''}
+              </div>
+              <div class="threat-actions">
+                <a class="btn btn-ghost btn-sm" href="#" onclick="toast('Désactivez l\\'extension dans les paramètres de votre navigateur','info')">ℹ️ Info</a>
+              </div>
+            </div>
+          `).join('')}</div>`}
+    </div>
+  `);
+}
+
+// ── Advanced Audit ────────────────────────────────────────────────────────────
+async function renderAdvanced() {
+  setContent(`<div class="loading"><div class="spinner"></div>Audit avancé en cours... (peut prendre 20-30 secondes)</div>`);
+  const res = await gp.auditAdvanced();
+
+  const sections = [
+    { key:'wmi',     icon:'👻', title:'Persistance WMI (fileless)', desc:'Abonnements WMI utilisés pour exécuter du code sans fichier sur le disque' },
+    { key:'hosts',   icon:'🌐', title:'Fichier HOSTS (DNS hijack)',  desc:'Détournement de noms de domaine vers des serveurs malveillants' },
+    { key:'ifeo',    icon:'🎯', title:'IFEO — Détournement processus', desc:'Image File Execution Options: redirige l\'exécution de programmes légitimes' },
+    { key:'appinit', icon:'💉', title:'AppInit_DLLs (injection DLL)', desc:'DLL injectée automatiquement dans tous les processus Windows' },
+    { key:'shadows', icon:'💾', title:'Copies fantômes (Shadow Copies)', desc:'Absence = ransomware a effacé vos sauvegardes ou elles n\'ont jamais été activées' },
+  ];
+
+  const allThreats = [
+    ...(res.wmi||[]), ...(res.hosts||[]), ...(res.ifeo||[]),
+    ...(res.appinit||[]), ...(res.shadows||[]),
+  ];
+
+  let html = `
+    <div class="topbar">
+      <h1>🔬 Audit avancé</h1>
+      <button class="btn btn-ghost" onclick="renderAdvanced()">↺ Actualiser</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+      ${sections.map(s => {
+        const sThreats = (res[s.key]||[]);
+        const hasThreats = sThreats.length > 0;
+        return `
+          <div class="panel" style="margin-bottom:0;border-left:3px solid ${hasThreats?'var(--red)':'var(--green)'}">
+            <div style="padding:14px 16px">
+              <div style="font-size:20px;margin-bottom:6px">${s.icon}</div>
+              <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px">${s.title}</div>
+              <div style="font-size:10px;color:var(--text3);margin-bottom:8px">${s.desc}</div>
+              <span class="badge ${hasThreats?'badge-red':'badge-green'}">${hasThreats?sThreats.length+' alerte(s)':'✅ OK'}</span>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+
+  if (allThreats.length === 0) {
+    html += `<div class="panel"><div style="padding:32px;text-align:center;color:var(--green);font-weight:700">✅ Aucune menace avancée détectée</div></div>`;
+  } else {
+    html += `
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">🚨 Menaces avancées détectées</div>
+          <span class="badge badge-red">${allThreats.length}</span>
+        </div>
+        <div class="threat-list">
+          ${allThreats.map(t => `
+            <div class="threat-item ${severityClass(t.severity)}">
+              <span class="threat-icon">${severityIcon(t.severity)}</span>
+              <div class="threat-info">
+                <div class="threat-desc">${severityBadge(t.severity)} ${escHtml(t.desc)}</div>
+                <div class="threat-file">${escHtml(t.file||'')}</div>
+                ${t.recommendation ? `<div style="font-size:10px;color:var(--blue);margin-top:4px">💡 ${escHtml(t.recommendation)}</div>` : ''}
+              </div>
+              ${t.canFix && t.fixType === 'wmi' ? `
+                <button class="btn btn-danger btn-sm" onclick="removeWMI('${escHtml(t.wmiClass||'')}','${escHtml(t.wmiName||'')}')">🗑 Supprimer</button>
+              ` : ''}
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  // Also show tasks/services threats in the same view
+  const tasksThreats = res.tasks || [];
+  const svcThreats   = res.services || [];
+  if (tasksThreats.length > 0 || svcThreats.length > 0) {
+    html += `
+      <div class="panel">
+        <div class="panel-header"><div class="panel-title">⚙️ Tâches & Services suspects</div></div>
+        <div class="threat-list">
+          ${[...tasksThreats, ...svcThreats].map(t => renderThreatItem(t, true)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  setContent(html);
+}
+
+async function removeWMI(cls, name) {
+  if (!confirm(`Supprimer l'abonnement WMI "${name}" ?`)) return;
+  const res = await gp.removeWMISubscription({ wmiClass: cls, wmiName: name });
+  if (res.success) { toast('Abonnement WMI supprimé', 'success'); renderAdvanced(); }
+  else toast(res.error || 'Erreur', 'error');
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────

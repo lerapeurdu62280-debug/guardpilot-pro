@@ -5,10 +5,11 @@ const path    = require('path');
 const os      = require('os');
 const crypto  = require('crypto');
 const { execSync, exec } = require('child_process');
-const { KNOWN_HASHES, SUSPICIOUS_STRINGS, SUSPICIOUS_PATHS,
+const { KNOWN_HASHES, SUSPICIOUS_STRINGS_SCRIPTS, SUSPICIOUS_STRINGS_PE,
         DANGEROUS_EXTENSIONS_IN_TEMP, RANSOMWARE_EXTENSIONS,
         SUSPICIOUS_PROCESS_PATTERNS, SUSPICIOUS_IP_RANGES, SAFE_PATHS,
         WHITELIST_PATHS, WHITELIST_HASHES } = require('./threats');
+const { analyzePESections, checkDoubleExtension, checkSignature } = require('./audit_advanced');
 
 // Check if a path is whitelisted (known legitimate software)
 function isWhitelisted(filePath) {
@@ -85,6 +86,19 @@ function psJSON(cmd, timeout = 10000) {
   } catch(e) { return null; }
 }
 
+// Determine if a file is in a truly suspicious location (where malware hides)
+function isInSuspiciousLocation(filePath) {
+  const norm = filePath.toLowerCase();
+  return (
+    norm.includes('\\temp\\') ||
+    norm.includes('\\tmp\\') ||
+    norm.includes('\\windows\\temp') ||
+    (norm.includes('\\public\\') && !norm.includes('\\public\\desktop')) ||
+    norm.includes('\\recycle') ||
+    norm.includes('\\$recycle.bin')
+  );
+}
+
 // ── Scan a single file ────────────────────────────────────────────────────────
 function analyzeFile(filePath) {
   // Skip whitelisted apps immediately
@@ -92,53 +106,79 @@ function analyzeFile(filePath) {
 
   const threats = [];
   const ext = path.extname(filePath).toLowerCase();
+  const inSuspLoc = isInSuspiciousLocation(filePath);
   let stat;
   try { stat = fs.statSync(filePath); } catch(e) { return []; }
   if (stat.size > 50 * 1024 * 1024) return []; // Skip > 50MB
   if (stat.size === 0) return [];
 
-  // 1. Hash check
+  // 1. Hash check — always reliable, always run
   const hash = sha256(filePath);
   if (hash && WHITELIST_HASHES.has(hash)) return []; // Safe hash, skip
   if (hash && KNOWN_HASHES.has(hash)) {
     threats.push({ type: 'KNOWN_MALWARE', severity: 'CRITICAL',
       desc: `Malware connu détecté (hash: ${hash.slice(0,16)}...)`, file: filePath });
+    return threats; // No need to check further
   }
 
-  // 2. Dangerous extension in temp/public paths
-  if (DANGEROUS_EXTENSIONS_IN_TEMP.includes(ext)) {
-    const norm = filePath.toLowerCase();
-    if (norm.includes('\\temp\\') || norm.includes('\\tmp\\') ||
-        norm.includes('\\public\\') || norm.includes('\\recycle')) {
-      threats.push({ type: 'SUSPICIOUS_LOCATION', severity: 'HIGH',
-        desc: `Exécutable dans un dossier suspect: ${path.basename(filePath)}`, file: filePath });
-    }
+  // 2. Double extension / RTL name trick — always flag
+  const dblExt = checkDoubleExtension(filePath);
+  if (dblExt.detected) {
+    threats.push({ type: 'DOUBLE_EXTENSION', severity: 'HIGH',
+      desc: `Technique de camouflage: "${dblExt.name}" (${dblExt.trick || 'double extension'})`, file: filePath });
   }
 
-  // 3. Ransomware extension
+  // 3. Ransomware extension — always flag regardless of location
   if (RANSOMWARE_EXTENSIONS.includes(ext)) {
     threats.push({ type: 'RANSOMWARE', severity: 'CRITICAL',
       desc: `Extension ransomware détectée: ${ext}`, file: filePath });
+    return threats;
   }
 
-  // 4. Entropy check (packed/encrypted = possible malware)
-  if (['.exe', '.dll', '.scr'].includes(ext) && stat.size > 1024) {
+  // 4. Dangerous extension in suspicious location
+  if (DANGEROUS_EXTENSIONS_IN_TEMP.includes(ext) && inSuspLoc) {
+    threats.push({ type: 'SUSPICIOUS_LOCATION', severity: 'HIGH',
+      desc: `Exécutable dans dossier suspect: ${path.basename(filePath)}`, file: filePath });
+  }
+
+  // 5. Entropy + PE sections — only in suspicious locations
+  if (['.exe', '.dll', '.scr'].includes(ext) && stat.size > 1024 && inSuspLoc) {
     const entropy = fileEntropy(filePath);
     if (entropy > 7.2) {
       threats.push({ type: 'HIGH_ENTROPY', severity: 'MEDIUM',
-        desc: `Fichier PE avec entropie élevée (${entropy.toFixed(2)}) — possible packing/chiffrement`, file: filePath });
+        desc: `PE avec entropie élevée (${entropy.toFixed(2)}) dans dossier suspect — possible packing/chiffrement`, file: filePath });
     }
+
+    // PE sections analysis (packer detection)
+    const suspSections = analyzePESections(filePath);
+    if (suspSections) {
+      threats.push({ type: 'PACKED_EXECUTABLE', severity: 'MEDIUM',
+        desc: `Exécutable packé détecté dans dossier suspect: sections ${suspSections.join(', ')}`, file: filePath });
+    }
+
+    // Note: signature check via PowerShell is too slow for batch scan, skipped here
   }
 
-  // 5. Suspicious strings scan (for scripts and small executables)
-  if (['.bat', '.ps1', '.vbs', '.js', '.hta', '.cmd'].includes(ext) ||
-      (stat.size < 5 * 1024 * 1024 && isPE(filePath))) {
+  // 6. String pattern scan
+  const isScript = ['.bat', '.ps1', '.vbs', '.js', '.hta', '.cmd'].includes(ext);
+  const isPEFile = ['.exe', '.dll', '.scr'].includes(ext) && stat.size < 5 * 1024 * 1024 && isPE(filePath);
+
+  if (isScript) {
     const content = readStrings(filePath);
-    for (const pattern of SUSPICIOUS_STRINGS) {
+    for (const pattern of SUSPICIOUS_STRINGS_SCRIPTS) {
       if (pattern.test(content)) {
         threats.push({ type: 'SUSPICIOUS_CODE', severity: 'HIGH',
-          desc: `Code suspect détecté: pattern "${pattern.source.slice(0,40)}"`, file: filePath });
-        break; // One per file is enough
+          desc: `Script suspect: pattern "${pattern.source.slice(0,40)}"`, file: filePath });
+        break;
+      }
+    }
+  } else if (isPEFile && inSuspLoc) {
+    const content = readStrings(filePath);
+    for (const pattern of SUSPICIOUS_STRINGS_PE) {
+      if (pattern.test(content)) {
+        threats.push({ type: 'SUSPICIOUS_CODE', severity: 'HIGH',
+          desc: `Code suspect dans emplacement dangereux: "${pattern.source.slice(0,40)}"`, file: filePath });
+        break;
       }
     }
   }
@@ -146,23 +186,30 @@ function analyzeFile(filePath) {
   return threats;
 }
 
-// ── Scan directories ──────────────────────────────────────────────────────────
-function scanDirectory(dirPath, onProgress, maxDepth = 5, depth = 0) {
+// ── Scan directories (async with yields to keep UI responsive) ────────────────
+async function scanDirectory(dirPath, onProgress, maxDepth = 5, depth = 0) {
   const threats = [];
   if (depth > maxDepth) return threats;
   let items;
   try { items = fs.readdirSync(dirPath, { withFileTypes: true }); } catch(e) { return threats; }
 
+  const SKIP_DIRS = ['windows', 'system volume information', '$recycle.bin', 'node_modules', '.git', 'winsxs', 'servicing'];
+  let count = 0;
+
   for (const item of items) {
     const full = path.join(dirPath, item.name);
     if (item.isDirectory()) {
-      if (!['windows', 'system volume information', '$recycle.bin', 'node_modules', '.git']
-          .includes(item.name.toLowerCase())) {
-        threats.push(...scanDirectory(full, onProgress, maxDepth, depth + 1));
+      if (!SKIP_DIRS.includes(item.name.toLowerCase())) {
+        const sub = await scanDirectory(full, onProgress, maxDepth, depth + 1);
+        threats.push(...sub);
       }
     } else {
       if (onProgress) onProgress(full);
       threats.push(...analyzeFile(full));
+    }
+    // Yield every 100 files so the event loop stays responsive (no "Ne répond pas")
+    if (++count % 100 === 0) {
+      await new Promise(resolve => setImmediate(resolve));
     }
   }
   return threats;
@@ -184,7 +231,7 @@ async function quickScan(onProgress) {
   for (const t of targets) {
     if (fs.existsSync(t)) {
       if (onProgress) onProgress({ status: 'scanning', path: t });
-      threats.push(...scanDirectory(t, (f) => onProgress && onProgress({ status: 'file', path: f }), 3));
+      threats.push(...await scanDirectory(t, (f) => onProgress && onProgress({ status: 'file', path: f }), 3));
     }
   }
 
@@ -197,7 +244,6 @@ async function quickScan(onProgress) {
 
 // ── Full Scan ─────────────────────────────────────────────────────────────────
 async function fullScan(onProgress) {
-  // Get all drives
   let drives = ['C:\\'];
   try {
     const out = execSync('powershell -NonInteractive -Command "Get-PSDrive -PSProvider FileSystem | Select-Object -ExpandProperty Root | ConvertTo-Json"',
@@ -209,7 +255,7 @@ async function fullScan(onProgress) {
   const threats = [];
   for (const drive of drives) {
     if (onProgress) onProgress({ status: 'scanning', path: drive });
-    threats.push(...scanDirectory(drive,
+    threats.push(...await scanDirectory(drive,
       (f) => onProgress && onProgress({ status: 'file', path: f }), 8));
   }
   const wdThreats = getWindowsDefenderThreats();
@@ -220,7 +266,7 @@ async function fullScan(onProgress) {
 // ── Custom Scan ───────────────────────────────────────────────────────────────
 async function customScan(folderPath, onProgress) {
   if (!fs.existsSync(folderPath)) return [];
-  const threats = scanDirectory(folderPath,
+  const threats = await scanDirectory(folderPath,
     (f) => onProgress && onProgress({ status: 'file', path: f }), 10);
   return dedupeThreats(threats);
 }
@@ -228,26 +274,53 @@ async function customScan(folderPath, onProgress) {
 // ── Windows Defender Integration ─────────────────────────────────────────────
 function getWindowsDefenderThreats() {
   const threats = [];
+
+  // 1. Active threats (IsActive = true) → CRITICAL
   try {
     const out = execSync(
-      `powershell -NonInteractive -Command "Get-MpThreatDetection | Select-Object ThreatName,ActionSuccess,CurrentThreatExecutionStatusID,InitialDetectionTime,Resources | ConvertTo-Json"`,
+      `powershell -NonInteractive -Command "Get-MpThreat | Where-Object {$_.IsActive -eq $true} | Select-Object ThreatName,Resources | ConvertTo-Json"`,
       { encoding: 'utf8', timeout: 8000 }
     );
-    if (!out.trim()) return [];
-    let items = JSON.parse(out);
-    if (!Array.isArray(items)) items = [items];
-    for (const item of items) {
-      if (!item) continue;
-      threats.push({
-        type: 'WINDOWS_DEFENDER',
-        severity: 'CRITICAL',
-        desc: `Windows Defender: ${item.ThreatName || 'Menace inconnue'}`,
-        file: Array.isArray(item.Resources) ? item.Resources.join(', ') : (item.Resources || ''),
-        source: 'Windows Defender',
-        date: item.InitialDetectionTime,
-      });
+    if (out.trim()) {
+      let items = JSON.parse(out);
+      if (!Array.isArray(items)) items = [items];
+      for (const item of items) {
+        if (!item) continue;
+        const res = Array.isArray(item.Resources) ? item.Resources.join(', ') : (item.Resources || '');
+        threats.push({
+          type: 'WINDOWS_DEFENDER',
+          severity: 'CRITICAL',
+          desc: `Windows Defender [ACTIF]: ${item.ThreatName || 'Menace active'}`,
+          file: res,
+          source: 'Windows Defender',
+        });
+      }
     }
   } catch(e) {}
+
+  // 2. Resolved threats (IsActive = false) → MEDIUM, labelled as already handled
+  try {
+    const out = execSync(
+      `powershell -NonInteractive -Command "Get-MpThreat | Where-Object {$_.IsActive -eq $false} | Select-Object ThreatName,Resources | ConvertTo-Json"`,
+      { encoding: 'utf8', timeout: 8000 }
+    );
+    if (out.trim()) {
+      let items = JSON.parse(out);
+      if (!Array.isArray(items)) items = [items];
+      for (const item of items) {
+        if (!item) continue;
+        const res = Array.isArray(item.Resources) ? item.Resources.join(', ') : (item.Resources || '');
+        threats.push({
+          type: 'WINDOWS_DEFENDER_HISTORY',
+          severity: 'MEDIUM',
+          desc: `Windows Defender [traité]: ${item.ThreatName || 'Menace inconnue'}`,
+          file: res,
+          source: 'Windows Defender',
+        });
+      }
+    }
+  } catch(e) {}
+
   return threats;
 }
 
