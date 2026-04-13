@@ -12,9 +12,11 @@
   },
   "nsis": {
     "oneClick": false,
+    "perMachine": true,
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
+    "menuCategory": "S.O.S INFO LUDO",
     "shortcutName": "GuardPilot Pro",
     "installerLanguages": ["fr"],
     "language": "1036"
