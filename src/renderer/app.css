@@ -16,6 +16,18 @@
   --shadow:0 4px 20px rgba(0,0,0,0.5);
   --shadow-lg:0 8px 40px rgba(0,0,0,0.6);
 }
+/* ── Light theme ──────────────────────────────────────────────────────────── */
+[data-theme="light"] {
+  --bg:#F0F4F8; --bg2:#FFFFFF; --bg3:#F8FAFC; --bg4:#EEF2F7;
+  --border:rgba(0,0,0,0.08); --border2:rgba(0,0,0,0.16);
+  --text:#1A2035; --text2:#4A5568; --text3:#9CA3AF;
+  --shadow:0 4px 20px rgba(0,0,0,0.1); --shadow-lg:0 8px 40px rgba(0,0,0,0.15);
+}
+[data-theme="light"] .sidebar { background:var(--bg2); }
+[data-theme="light"] .scan-card { background:var(--bg2); }
+[data-theme="light"] .threat-item { background:var(--bg2); }
+[data-theme="light"] .data-table th { background:var(--bg4); }
+
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html{height:100vh;overflow:hidden}
 body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh;overflow:hidden;font-size:13px;line-height:1.5}
@@ -206,3 +218,10 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh
 .license-sub{font-size:13px;color:var(--text2);margin-bottom:24px;line-height:1.7}
 .form-input{width:100%;padding:10px 14px;border:1px solid var(--border2);border-radius:var(--r-sm);background:var(--bg2);color:var(--text);font-size:13px;font-family:var(--font-mono);outline:none;transition:all .15s;letter-spacing:.5px}
 .form-input:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(59,130,246,0.2)}
+
+/* ── Input field (for schedule page) ───────────────────────────────────────── */
+.input-field{width:100%;padding:8px 12px;border:1px solid var(--border2);border-radius:var(--r-sm);background:var(--bg2);color:var(--text);font-size:12px;outline:none;transition:border-color .15s}
+.input-field:focus{border-color:var(--blue)}
+
+/* ── Drag & drop zone ───────────────────────────────────────────────────────── */
+.drag-over::after{content:'Glissez vos fichiers ici';position:fixed;inset:0;background:rgba(59,130,246,0.15);border:3px dashed var(--blue);border-radius:var(--r-lg);display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;color:var(--blue);z-index:999;pointer-events:none}

@@ -54,6 +54,28 @@ contextBridge.exposeInMainWorld('gp', {
   getStats:         ()      => ipcRenderer.invoke('get-stats'),
   clearHistory:     ()      => ipcRenderer.invoke('clear-history'),
   exportPDF:        (data)  => ipcRenderer.invoke('export-pdf', data),
+  exportWord:       (data)  => ipcRenderer.invoke('export-word', data),
+
+  deleteFile:       (p)     => ipcRenderer.invoke('delete-file', p),
+  analyzeFile:      (p)     => ipcRenderer.invoke('analyze-file', p),
+
+  logAction:        (a)     => ipcRenderer.invoke('log-action', a),
+  getActionLog:     ()      => ipcRenderer.invoke('get-action-log'),
+  clearActionLog:   ()      => ipcRenderer.invoke('clear-action-log'),
+
+  getExclusions:    ()      => ipcRenderer.invoke('get-exclusions'),
+  addExclusion:     (p)     => ipcRenderer.invoke('add-exclusion', p),
+  removeExclusion:  (p)     => ipcRenderer.invoke('remove-exclusion', p),
+  chooseExclusionPath: ()   => ipcRenderer.invoke('choose-exclusion-path'),
+
+  getPrefs:         ()      => ipcRenderer.invoke('get-prefs'),
+  setPref:          (k,v)   => ipcRenderer.invoke('set-pref', { key:k, value:v }),
+
+  getScheduledScans:()      => ipcRenderer.invoke('get-scheduled-scans'),
+  scheduleScan:     (opts)  => ipcRenderer.invoke('schedule-scan', opts),
+  unscheduleScan:   (name)  => ipcRenderer.invoke('unschedule-scan', name),
+
+  openRepairPilot:  (data)  => ipcRenderer.invoke('open-repairpilot', data),
 
   onScanProgress:   (cb)    => ipcRenderer.on('scan-progress', (_, d) => cb(d)),
   onRealtimeThreat: (cb)    => ipcRenderer.on('realtime-threat', (_, d) => cb(d)),

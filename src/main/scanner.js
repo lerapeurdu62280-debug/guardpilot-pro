@@ -1,10 +1,13 @@
 'use strict';
 
 const fs      = require('fs');
+const fsp     = require('fs').promises;
 const path    = require('path');
 const os      = require('os');
 const crypto  = require('crypto');
 const { execSync, exec } = require('child_process');
+const { promisify } = require('util');
+const execAsync = promisify(exec);
 const { KNOWN_HASHES, SUSPICIOUS_STRINGS_SCRIPTS, SUSPICIOUS_STRINGS_PE,
         DANGEROUS_EXTENSIONS_IN_TEMP, RANSOMWARE_EXTENSIONS,
         SUSPICIOUS_PROCESS_PATTERNS, SUSPICIOUS_IP_RANGES, SAFE_PATHS,
@@ -43,16 +46,16 @@ function isWhitelisted(filePath) {
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
-function sha256(filePath) {
+async function sha256(filePath) {
   try {
-    const buf = fs.readFileSync(filePath);
+    const buf = await fsp.readFile(filePath);
     return crypto.createHash('sha256').update(buf).digest('hex');
   } catch(e) { return null; }
 }
 
-function fileEntropy(filePath) {
+async function fileEntropy(filePath) {
   try {
-    const buf = fs.readFileSync(filePath);
+    const buf = await fsp.readFile(filePath);
     if (buf.length === 0) return 0;
     const freq = new Array(256).fill(0);
     for (const byte of buf) freq[byte]++;
@@ -66,19 +69,19 @@ function fileEntropy(filePath) {
   } catch(e) { return 0; }
 }
 
-function isPE(filePath) {
+async function isPE(filePath) {
   try {
-    const fd = fs.openSync(filePath, 'r');
+    const fd = await fsp.open(filePath, 'r');
     const buf = Buffer.alloc(2);
-    fs.readSync(fd, buf, 0, 2, 0);
-    fs.closeSync(fd);
+    await fd.read(buf, 0, 2, 0);
+    await fd.close();
     return buf[0] === 0x4D && buf[1] === 0x5A; // MZ header
   } catch(e) { return false; }
 }
 
-function readStrings(filePath, minLen = 6) {
+async function readStrings(filePath, minLen = 6) {
   try {
-    const buf = fs.readFileSync(filePath);
+    const buf = await fsp.readFile(filePath);
     const strings = [];
     let current = '';
     for (const byte of buf) {
@@ -124,7 +127,7 @@ function isInSuspiciousLocation(filePath) {
 }
 
 // ── Scan a single file ────────────────────────────────────────────────────────
-function analyzeFile(filePath) {
+async function analyzeFile(filePath) {
   // Skip whitelisted apps immediately
   if (isWhitelisted(filePath)) return [];
 
@@ -137,7 +140,7 @@ function analyzeFile(filePath) {
   if (stat.size === 0) return [];
 
   // 1. Hash check — always reliable, always run
-  const hash = sha256(filePath);
+  const hash = await sha256(filePath);
   if (hash && WHITELIST_HASHES.has(hash)) return []; // Safe hash, skip
   if (hash && getSigs().hashes.has(hash)) {
     threats.push({ type: 'KNOWN_MALWARE', severity: 'CRITICAL',
@@ -167,7 +170,7 @@ function analyzeFile(filePath) {
 
   // 5. Entropy + PE sections — only in suspicious locations
   if (['.exe', '.dll', '.scr'].includes(ext) && stat.size > 1024 && inSuspLoc) {
-    const entropy = fileEntropy(filePath);
+    const entropy = await fileEntropy(filePath);
     if (entropy > 7.2) {
       threats.push({ type: 'HIGH_ENTROPY', severity: 'MEDIUM',
         desc: `PE avec entropie élevée (${entropy.toFixed(2)}) dans dossier suspect — possible packing/chiffrement`, file: filePath });
@@ -179,16 +182,15 @@ function analyzeFile(filePath) {
       threats.push({ type: 'PACKED_EXECUTABLE', severity: 'MEDIUM',
         desc: `Exécutable packé détecté dans dossier suspect: sections ${suspSections.join(', ')}`, file: filePath });
     }
-
-    // Note: signature check via PowerShell is too slow for batch scan, skipped here
   }
 
   // 6. String pattern scan
   const isScript = ['.bat', '.ps1', '.vbs', '.js', '.hta', '.cmd'].includes(ext);
-  const isPEFile = ['.exe', '.dll', '.scr'].includes(ext) && stat.size < 5 * 1024 * 1024 && isPE(filePath);
+  const peCheck = ['.exe', '.dll', '.scr'].includes(ext) && stat.size < 5 * 1024 * 1024;
+  const isPEFile = peCheck ? await isPE(filePath) : false;
 
   if (isScript) {
-    const content = readStrings(filePath);
+    const content = await readStrings(filePath);
     for (const pattern of SUSPICIOUS_STRINGS_SCRIPTS) {
       if (pattern.test(content)) {
         threats.push({ type: 'SUSPICIOUS_CODE', severity: 'HIGH',
@@ -197,7 +199,7 @@ function analyzeFile(filePath) {
       }
     }
   } else if (isPEFile && inSuspLoc) {
-    const content = readStrings(filePath);
+    const content = await readStrings(filePath);
     for (const pattern of SUSPICIOUS_STRINGS_PE) {
       if (pattern.test(content)) {
         threats.push({ type: 'SUSPICIOUS_CODE', severity: 'HIGH',
@@ -229,10 +231,10 @@ async function scanDirectory(dirPath, onProgress, maxDepth = 5, depth = 0) {
       }
     } else {
       if (onProgress) onProgress(full);
-      threats.push(...analyzeFile(full));
+      threats.push(...await analyzeFile(full));
     }
-    // Yield every 100 files so the event loop stays responsive (no "Ne répond pas")
-    if (++count % 100 === 0) {
+    // Yield every 50 files so the worker event loop stays responsive
+    if (++count % 50 === 0) {
       await new Promise(resolve => setImmediate(resolve));
     }
   }
@@ -536,67 +538,69 @@ function auditNetwork() {
   return threats;
 }
 
-// ── Vulnerability Audit ───────────────────────────────────────────────────────
-function auditVulnerabilities() {
+// ── Vulnerability Audit (fully async — no main-thread freeze) ─────────────────
+async function auditVulnerabilities() {
   const checks = [];
 
-  // 1. Windows Defender status
-  const wdStatus = getDefenderStatus();
-  if (wdStatus) {
-    if (!wdStatus.AntivirusEnabled) checks.push({ id:'av', status:'FAIL', severity:'CRITICAL', label:'Antivirus Windows Defender', desc:'L\'antivirus est désactivé !' });
-    else checks.push({ id:'av', status:'OK', severity:'INFO', label:'Antivirus Windows Defender', desc:'Actif et protégé' });
-    if (!wdStatus.RealTimeProtectionEnabled) checks.push({ id:'rt', status:'FAIL', severity:'HIGH', label:'Protection en temps réel', desc:'La protection temps réel est désactivée !' });
-    else checks.push({ id:'rt', status:'OK', severity:'INFO', label:'Protection en temps réel', desc:'Active' });
-    const sigAge = wdStatus.AntivirusSignatureLastUpdated;
-    if (sigAge) {
-      const d = new Date(sigAge);
-      const daysOld = Math.floor((Date.now()-d.getTime())/86400000);
-      if (daysOld > 3) checks.push({ id:'sig', status:'WARN', severity:'MEDIUM', label:'Signatures antivirus', desc:`Signatures vieilles de ${daysOld} jours — mise à jour recommandée` });
-      else checks.push({ id:'sig', status:'OK', severity:'INFO', label:'Signatures antivirus', desc:`À jour (${daysOld} jour(s))` });
-    }
+  async function psRun(cmd, timeout = 6000) {
+    try {
+      const { stdout } = await execAsync(
+        `powershell -NonInteractive -Command "${cmd.replace(/"/g, '\\"')}"`,
+        { encoding: 'utf8', timeout }
+      );
+      return stdout.trim();
+    } catch(e) { return null; }
+  }
+
+  // 1. GuardPilot engine status (remplace Windows Defender)
+  try {
+    const sigs = loadCachedSignatures();
+    const hashCount = sigs ? (sigs.known_hashes || []).length : getSigs().hashes.size;
+    const version   = sigs ? (sigs.version || '—') : '—';
+    checks.push({ id:'gp', status:'OK', severity:'INFO', label:'Moteur GuardPilot',
+      desc:`Actif — ${hashCount} signatures chargées (v${version})` });
+  } catch(e) {
+    checks.push({ id:'gp', status:'WARN', severity:'MEDIUM', label:'Moteur GuardPilot',
+      desc:'Impossible de charger les signatures' });
   }
 
   // 2. Firewall status
-  try {
-    const fw = execSync(`powershell -NonInteractive -Command "(Get-NetFirewallProfile -All | Where-Object {!$_.Enabled}) | Measure-Object | Select-Object -ExpandProperty Count"`,
-      { encoding:'utf8', timeout:5000 }).trim();
-    if (parseInt(fw) > 0) checks.push({ id:'fw', status:'FAIL', severity:'HIGH', label:'Pare-feu Windows', desc:`${fw} profil(s) de pare-feu désactivé(s) !` });
-    else checks.push({ id:'fw', status:'OK', severity:'INFO', label:'Pare-feu Windows', desc:'Tous les profils actifs' });
-  } catch(e) { checks.push({ id:'fw', status:'UNKNOWN', severity:'INFO', label:'Pare-feu Windows', desc:'Impossible de vérifier' }); }
+  const fw = await psRun("(Get-NetFirewallProfile -All | Where-Object {!$_.Enabled}) | Measure-Object | Select-Object -ExpandProperty Count");
+  if (fw === null) {
+    checks.push({ id:'fw', status:'UNKNOWN', severity:'INFO', label:'Pare-feu Windows', desc:'Impossible de vérifier' });
+  } else if (parseInt(fw) > 0) {
+    checks.push({ id:'fw', status:'FAIL', severity:'HIGH', label:'Pare-feu Windows', desc:`${fw} profil(s) de pare-feu désactivé(s) !` });
+  } else {
+    checks.push({ id:'fw', status:'OK', severity:'INFO', label:'Pare-feu Windows', desc:'Tous les profils actifs' });
+  }
 
   // 3. UAC status
-  try {
-    const uac = execSync(`powershell -NonInteractive -Command "Get-ItemPropertyValue 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' -Name 'EnableLUA'"`,
-      { encoding:'utf8', timeout:5000 }).trim();
-    if (uac === '1') checks.push({ id:'uac', status:'OK', severity:'INFO', label:'UAC (Contrôle de compte)', desc:'Activé' });
-    else checks.push({ id:'uac', status:'FAIL', severity:'HIGH', label:'UAC (Contrôle de compte)', desc:'UAC désactivé — risque élevé d\'élévation de privilèges !' });
-  } catch(e) {}
+  const uac = await psRun("Get-ItemPropertyValue 'HKLM:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Policies\\\\System' -Name 'EnableLUA'");
+  if (uac === '1') checks.push({ id:'uac', status:'OK', severity:'INFO', label:'UAC (Contrôle de compte)', desc:'Activé' });
+  else if (uac !== null) checks.push({ id:'uac', status:'FAIL', severity:'HIGH', label:'UAC (Contrôle de compte)', desc:'UAC désactivé — risque élevé d\'élévation de privilèges !' });
 
-  // 4. Windows Update
-  try {
-    const wu = execSync(`powershell -NonInteractive -Command "(Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1).InstalledOn"`,
-      { encoding:'utf8', timeout:8000 }).trim();
+  // 4. Windows Update (dernier hotfix — rapide, sans WUApiLib)
+  const wu = await psRun("(Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1).InstalledOn", 10000);
+  if (wu) {
     const d = new Date(wu);
-    const days = Math.floor((Date.now()-d.getTime())/86400000);
-    if (days > 30) checks.push({ id:'wu', status:'WARN', severity:'MEDIUM', label:'Windows Update', desc:`Dernière mise à jour il y a ${days} jours — mettez à jour Windows` });
-    else checks.push({ id:'wu', status:'OK', severity:'INFO', label:'Windows Update', desc:`Dernière mise à jour il y a ${days} jour(s)` });
-  } catch(e) { checks.push({ id:'wu', status:'UNKNOWN', severity:'INFO', label:'Windows Update', desc:'Impossible de vérifier' }); }
+    if (!isNaN(d)) {
+      const days = Math.floor((Date.now()-d.getTime())/86400000);
+      if (days > 30) checks.push({ id:'wu', status:'WARN', severity:'MEDIUM', label:'Windows Update', desc:`Dernière mise à jour il y a ${days} jours — mettez à jour Windows` });
+      else checks.push({ id:'wu', status:'OK', severity:'INFO', label:'Windows Update', desc:`Dernière mise à jour il y a ${days} jour(s)` });
+    }
+  } else {
+    checks.push({ id:'wu', status:'UNKNOWN', severity:'INFO', label:'Windows Update', desc:'Impossible de vérifier' });
+  }
 
   // 5. Guest account
-  try {
-    const guest = execSync(`powershell -NonInteractive -Command "(Get-LocalUser -Name 'Guest').Enabled"`,
-      { encoding:'utf8', timeout:5000 }).trim();
-    if (guest === 'True') checks.push({ id:'guest', status:'WARN', severity:'MEDIUM', label:'Compte Invité Windows', desc:'Compte Invité activé — désactivation recommandée' });
-    else checks.push({ id:'guest', status:'OK', severity:'INFO', label:'Compte Invité Windows', desc:'Désactivé' });
-  } catch(e) {}
+  const guest = await psRun("(Get-LocalUser -Name 'Guest').Enabled");
+  if (guest === 'True') checks.push({ id:'guest', status:'WARN', severity:'MEDIUM', label:'Compte Invité Windows', desc:'Compte Invité activé — désactivation recommandée' });
+  else if (guest === 'False') checks.push({ id:'guest', status:'OK', severity:'INFO', label:'Compte Invité Windows', desc:'Désactivé' });
 
-  // 6. AutoRun disabled
-  try {
-    const ar = execSync(`powershell -NonInteractive -Command "Get-ItemPropertyValue 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer' -Name 'NoDriveTypeAutoRun' -ErrorAction SilentlyContinue"`,
-      { encoding:'utf8', timeout:5000 }).trim();
-    if (ar === '255' || ar === '95') checks.push({ id:'ar', status:'OK', severity:'INFO', label:'AutoRun USB', desc:'Désactivé (bonne pratique)' });
-    else checks.push({ id:'ar', status:'WARN', severity:'MEDIUM', label:'AutoRun USB', desc:'AutoRun potentiellement actif — risque d\'infection USB' });
-  } catch(e) { checks.push({ id:'ar', status:'WARN', severity:'MEDIUM', label:'AutoRun USB', desc:'AutoRun potentiellement actif' }); }
+  // 6. AutoRun
+  const ar = await psRun("Get-ItemPropertyValue 'HKLM:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Policies\\\\Explorer' -Name 'NoDriveTypeAutoRun' -ErrorAction SilentlyContinue");
+  if (ar === '255' || ar === '95') checks.push({ id:'ar', status:'OK', severity:'INFO', label:'AutoRun USB', desc:'Désactivé (bonne pratique)' });
+  else checks.push({ id:'ar', status:'WARN', severity:'MEDIUM', label:'AutoRun USB', desc:'AutoRun potentiellement actif — risque d\'infection USB' });
 
   return checks;
 }

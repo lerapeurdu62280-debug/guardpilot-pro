@@ -1,16 +1,28 @@
 'use strict';
 
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { Worker } = require('worker_threads');
 const path = require('path');
 const fs   = require('fs');
 const os   = require('os');
 
 let Store;
 try { Store = require('electron-store'); } catch(e) { Store = null; }
-const store = Store ? new Store({ encryptionKey: 'GRDP2026SOSINFOLUDO' }) : { get:(k,d)=>d, set:()=>{}, delete:()=>{} };
+
+// ── Load .env (secrets stay out of git) ──────────────────────────────────────
+try {
+  fs.readFileSync(path.join(__dirname, '../../.env'), 'utf8').split('\n').forEach(line => {
+    const m = line.match(/^([^#=\s][^=]*)=(.*)$/);
+    if (m) process.env[m[1].trim()] = m[2].trim();
+  });
+} catch(e) {}
+
+const store = Store ? new Store({ encryptionKey: process.env.STORE_KEY || 'GRDP2026SOSINFOLUDO' }) : { get:(k,d)=>d, set:()=>{}, delete:()=>{} };
 
 let BUILD_VARIANT = 'client';
 try { BUILD_VARIANT = require('../../package.json').buildVariant || 'client'; } catch(e) {}
+
+const { updateSignatures, getSignaturesInfo } = require('./updater');
 
 // Lazy-load modules to avoid startup delay
 let scanner = null;
@@ -21,7 +33,7 @@ function getRealtime() { if (!realtime) realtime = require('./realtime');       
 function getAdvanced() { if (!advanced) advanced = require('./audit_advanced'); return advanced; }
 
 // ── License ───────────────────────────────────────────────────────────────────
-const LICENSE_SECRET = 'SOSINFOLUDO2026GP';
+const LICENSE_SECRET = process.env.LICENSE_SECRET || '';
 function isValidKey(raw) {
   const k = (raw||'').trim().toUpperCase();
   if (!/^GRDP-[A-Z0-9]{8}-[A-Z0-9]{4}$/.test(k)) return false;
@@ -54,12 +66,35 @@ ipcMain.handle('deactivate-license', () => { store.delete('licenseKey'); return 
 const QUARANTINE_DIR = path.join(os.homedir(), 'AppData', 'Local', 'GuardPilot', 'Quarantine');
 
 // ── Scan IPC ──────────────────────────────────────────────────────────────────
-ipcMain.handle('quick-scan', async () => {
-  let progress = [];
-  const threats = await getScanner().quickScan((p) => {
-    progress.push(p);
-    mainWindow?.webContents.send('scan-progress', p);
+// ── Worker-based scan (keeps main thread free → UI stays fluid) ───────────────
+function runScanWorker(scanType, folderPath = null) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(path.join(__dirname, 'scanner-worker.js'), {
+      workerData: { scanType, folderPath }
+    });
+    let lastSend = 0;
+    worker.on('message', (msg) => {
+      if (msg.type === 'progress') {
+        const now = Date.now();
+        if (now - lastSend >= 120) {
+          lastSend = now;
+          mainWindow?.webContents.send('scan-progress', msg.data);
+        }
+      } else if (msg.type === 'done') {
+        resolve(msg.threats || []);
+      } else if (msg.type === 'error') {
+        reject(new Error(msg.message));
+      }
+    });
+    worker.on('error', reject);
+    worker.on('exit', (code) => {
+      if (code !== 0) reject(new Error(`Scanner worker exited with code ${code}`));
+    });
   });
+}
+
+ipcMain.handle('quick-scan', async () => {
+  const threats = await runScanWorker('quick');
   const scan = { id: Date.now(), type:'quick', date:new Date().toISOString(), threats, count:threats.length };
   const history = store.get('scanHistory', []);
   history.unshift({ ...scan, threats: threats.length });
@@ -69,7 +104,7 @@ ipcMain.handle('quick-scan', async () => {
 });
 
 ipcMain.handle('full-scan', async () => {
-  const threats = await getScanner().fullScan((p) => mainWindow?.webContents.send('scan-progress', p));
+  const threats = await runScanWorker('full');
   const scan = { id:Date.now(), type:'full', date:new Date().toISOString(), threats, count:threats.length };
   const history = store.get('scanHistory', []);
   history.unshift({ ...scan, threats: threats.length });
@@ -79,8 +114,7 @@ ipcMain.handle('full-scan', async () => {
 });
 
 ipcMain.handle('custom-scan', async (_, folderPath) => {
-  const threats = await getScanner().customScan(folderPath,
-    (p) => mainWindow?.webContents.send('scan-progress', p));
+  const threats = await runScanWorker('custom', folderPath);
   return { success:true, threats, count:threats.length, date:new Date().toISOString() };
 });
 
@@ -103,7 +137,7 @@ ipcMain.handle('audit-network', async () => {
   return { success:true, threats: getScanner().auditNetwork() };
 });
 ipcMain.handle('audit-vulnerabilities', async () => {
-  return { success:true, checks: getScanner().auditVulnerabilities() };
+  return { success:true, checks: await getScanner().auditVulnerabilities() };
 });
 ipcMain.handle('get-defender-status', async () => {
   return { success:true, status: getScanner().getDefenderStatus() };
@@ -111,6 +145,16 @@ ipcMain.handle('get-defender-status', async () => {
 ipcMain.handle('update-defender-signatures', async () => {
   return { success: getScanner().updateDefenderSignatures() };
 });
+ipcMain.handle('update-guardpilot-signatures', async () => {
+  try {
+    const sigs = await updateSignatures();
+    getScanner().reloadSignatures();
+    return { success: true, version: sigs.version, updated: sigs.updated, hashCount: (sigs.known_hashes||[]).length };
+  } catch(e) {
+    return { success: false, error: e.message };
+  }
+});
+ipcMain.handle('get-signatures-info', () => getSignaturesInfo());
 ipcMain.handle('get-defender-threats', async () => {
   return { success:true, threats: getScanner().getWindowsDefenderThreats() };
 });
@@ -196,10 +240,149 @@ ipcMain.handle('kill-process', (_, pid) => {
   } catch(e) { return { success: false, error: e.message }; }
 });
 
+// ── Delete file directly ──────────────────────────────────────────────────────
+ipcMain.handle('delete-file', async (_, filePath) => {
+  try { fs.unlinkSync(filePath); return { success: true }; }
+  catch(e) { return { success: false, error: e.message }; }
+});
+
+// ── Action log ────────────────────────────────────────────────────────────────
+ipcMain.handle('log-action', (_, action) => {
+  const log = store.get('actionLog', []);
+  log.unshift({ ...action, date: new Date().toISOString() });
+  store.set('actionLog', log.slice(0, 500));
+  return true;
+});
+ipcMain.handle('get-action-log', () => store.get('actionLog', []));
+ipcMain.handle('clear-action-log', () => { store.set('actionLog', []); return true; });
+
+// ── Exclusions ────────────────────────────────────────────────────────────────
+ipcMain.handle('get-exclusions', () => store.get('exclusions', []));
+ipcMain.handle('add-exclusion', (_, p) => {
+  const excl = store.get('exclusions', []);
+  if (!excl.includes(p)) { excl.push(p); store.set('exclusions', excl); }
+  return store.get('exclusions', []);
+});
+ipcMain.handle('remove-exclusion', (_, p) => {
+  const excl = store.get('exclusions', []).filter(e => e !== p);
+  store.set('exclusions', excl);
+  return excl;
+});
+ipcMain.handle('choose-exclusion-path', async () => {
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: 'Choisir un dossier ou fichier à exclure',
+    properties: ['openDirectory', 'openFile'],
+  });
+  return res.canceled ? null : res.filePaths[0];
+});
+
+// ── Preferences (theme, etc.) ─────────────────────────────────────────────────
+ipcMain.handle('get-prefs', () => store.get('prefs', { theme: 'dark' }));
+ipcMain.handle('set-pref', (_, { key, value }) => {
+  const prefs = store.get('prefs', { theme: 'dark' });
+  prefs[key] = value;
+  store.set('prefs', prefs);
+  return prefs;
+});
+
+// ── Scheduled scans (Windows Task Scheduler) ──────────────────────────────────
+ipcMain.handle('get-scheduled-scans', async () => {
+  try {
+    const out = require('child_process').execSync(
+      `powershell -NonInteractive -Command "Get-ScheduledTask -TaskPath '\\GuardPilot\\' -ErrorAction SilentlyContinue | Select-Object TaskName,State,Description | ConvertTo-Json"`,
+      { encoding: 'utf8', timeout: 8000 }
+    ).trim();
+    if (!out) return [];
+    const tasks = JSON.parse(out);
+    return Array.isArray(tasks) ? tasks : [tasks];
+  } catch(e) { return []; }
+});
+ipcMain.handle('schedule-scan', async (_, { scanType, trigger }) => {
+  try {
+    const appExe = process.execPath.replace(/'/g, "''");
+    const taskName = `GuardPilot_${scanType}`;
+    const desc = `Scan ${scanType} automatique — GuardPilot Pro`;
+    // trigger: { type: 'daily'|'weekly', time: '08:00', day: 'Monday' }
+    let triggerPS = '';
+    if (trigger.type === 'daily') {
+      triggerPS = `New-ScheduledTaskTrigger -Daily -At '${trigger.time}'`;
+    } else {
+      triggerPS = `New-ScheduledTaskTrigger -Weekly -DaysOfWeek ${trigger.day} -At '${trigger.time}'`;
+    }
+    const ps = `
+      $action = New-ScheduledTaskAction -Execute '${appExe}' -Argument '--scan-${scanType}';
+      $trigger = ${triggerPS};
+      $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable;
+      Register-ScheduledTask -TaskName '${taskName}' -TaskPath '\\GuardPilot\\' -Action $action -Trigger $trigger -Settings $settings -Description '${desc}' -Force
+    `.replace(/\n\s+/g, ' ');
+    require('child_process').execSync(`powershell -NonInteractive -Command "${ps.replace(/"/g, '\\"')}"`, { timeout: 10000 });
+    return { success: true };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+ipcMain.handle('unschedule-scan', async (_, taskName) => {
+  try {
+    require('child_process').execSync(
+      `powershell -NonInteractive -Command "Unregister-ScheduledTask -TaskName '${taskName}' -TaskPath '\\\\GuardPilot\\\\' -Confirm:\\$false -ErrorAction SilentlyContinue"`,
+      { timeout: 8000 }
+    );
+    return { success: true };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
+// ── Analyze single file ───────────────────────────────────────────────────────
+ipcMain.handle('analyze-file', async (_, filePath) => {
+  try {
+    const threats = getScanner().analyzeFile(filePath);
+    return { success: true, threats, file: filePath };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
+// ── Export Word (.doc HTML) ───────────────────────────────────────────────────
+ipcMain.handle('export-word', async (_, data) => {
+  const savePath = await dialog.showSaveDialog(mainWindow, {
+    title: 'Exporter le rapport Word',
+    defaultPath: `GuardPilot_Rapport_${new Date().toISOString().slice(0,10)}.doc`,
+    filters: [{ name:'Word Document', extensions:['doc'] }],
+  });
+  if (savePath.canceled || !savePath.filePath) return { success: false };
+  try {
+    const html = buildReportHTML(data || {});
+    const wordHtml = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="UTF-8"></head><body>${html}</body></html>`;
+    fs.writeFileSync(savePath.filePath, wordHtml, 'utf8');
+    shell.openPath(savePath.filePath);
+    return { success: true };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
+// ── Open RepairPilot with prefilled data ──────────────────────────────────────
+ipcMain.handle('open-repairpilot', async (_, data) => {
+  try {
+    const rpDir = path.join(os.homedir(), 'RepairPilot');
+    const tmpFile = path.join(os.tmpdir(), 'guardpilot_to_repairpilot.json');
+    fs.writeFileSync(tmpFile, JSON.stringify(data), 'utf8');
+    require('child_process').spawn('npm', ['start'], {
+      cwd: rpDir, detached: true, stdio: 'ignore',
+      env: { ...process.env, GP_IMPORT: tmpFile }
+    }).unref();
+    return { success: true };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
 // ── Real-time protection IPC ───────────────────────────────────────────────────
 ipcMain.handle('start-realtime', () => {
+  const { Notification } = require('electron');
   getRealtime().startRealtime(
-    (threat) => mainWindow?.webContents.send('realtime-threat', threat),
+    (threat) => {
+      mainWindow?.webContents.send('realtime-threat', threat);
+      // Windows native notification
+      if (Notification.isSupported()) {
+        new Notification({
+          title: '🚨 GuardPilot — Menace détectée',
+          body: (threat.desc || 'Fichier suspect détecté').slice(0, 120),
+          urgency: 'critical',
+        }).show();
+      }
+    },
     (activity) => mainWindow?.webContents.send('realtime-activity', activity)
   );
   store.set('realtimeEnabled', true);
@@ -218,16 +401,153 @@ ipcMain.handle('get-realtime-status', () => ({
 // ── History & stats IPC ───────────────────────────────────────────────────────
 ipcMain.handle('get-scan-history', () => store.get('scanHistory', []));
 ipcMain.handle('get-last-scan', () => store.get('lastScan', null));
-ipcMain.handle('get-stats', () => ({
-  totalScans: store.get('scanHistory', []).length,
-  threatsFound: store.get('scanHistory', []).reduce((s,h) => s+(typeof h.threats==='number'?h.threats:0), 0),
-  quarantined: store.get('quarantine', []).length,
-  lastScan: store.get('scanHistory', [])[0]?.date || null,
-}));
+ipcMain.handle('get-stats', () => {
+  const history = store.get('scanHistory', []);
+  const actionLog = store.get('actionLog', []);
+  const now = new Date();
+  const thisMonth = history.filter(h => {
+    const d = new Date(h.date);
+    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+  });
+  return {
+    totalScans: history.length,
+    scansThisMonth: thisMonth.length,
+    threatsFound: history.reduce((s,h) => s+(typeof h.threats==='number'?h.threats:0), 0),
+    threatsThisMonth: thisMonth.reduce((s,h) => s+(typeof h.threats==='number'?h.threats:0), 0),
+    quarantined: store.get('quarantine', []).length,
+    actionsTotal: actionLog.length,
+    lastScan: history[0]?.date || null,
+    history,
+  };
+});
 ipcMain.handle('clear-history', () => { store.set('scanHistory', []); return true; });
 
 // ── PDF Export ────────────────────────────────────────────────────────────────
-ipcMain.handle('export-pdf', async () => {
+function buildReportHTML(data) {
+  const now = new Date().toLocaleString('fr-FR');
+  const threats = data.threats || [];
+  const stats = data.stats || {};
+
+  function severityLabel(s) {
+    switch ((s||'').toUpperCase()) {
+      case 'CRITICAL': return { label: 'CRITIQUE', color: '#EF4444', bg: '#FEE2E2' };
+      case 'HIGH':     return { label: 'ÉLEVÉ',    color: '#F59E0B', bg: '#FEF3C7' };
+      case 'MEDIUM':   return { label: 'MOYEN',    color: '#3B82F6', bg: '#DBEAFE' };
+      default:         return { label: 'INFO',     color: '#6B7280', bg: '#F3F4F6' };
+    }
+  }
+
+  const critical = threats.filter(t => (t.severity||'').toUpperCase() === 'CRITICAL').length;
+  const high     = threats.filter(t => (t.severity||'').toUpperCase() === 'HIGH').length;
+  const medium   = threats.filter(t => (t.severity||'').toUpperCase() === 'MEDIUM').length;
+
+  const rows = threats.map((t, i) => {
+    const sv = severityLabel(t.severity);
+    return `
+      <tr style="background:${i%2===0?'#fff':'#F9FAFB'}">
+        <td style="padding:8px 12px;font-size:12px;color:#6B7280;white-space:nowrap">${i+1}</td>
+        <td style="padding:8px 12px">
+          <span style="background:${sv.bg};color:${sv.color};font-weight:700;font-size:11px;padding:2px 8px;border-radius:4px">${sv.label}</span>
+        </td>
+        <td style="padding:8px 12px;font-size:12px;font-weight:600;color:#1F2937">${escapeHtml(t.type||'')}</td>
+        <td style="padding:8px 12px;font-size:12px;color:#374151">${escapeHtml(t.desc||'')}</td>
+        <td style="padding:8px 12px;font-size:11px;color:#6B7280;word-break:break-all;max-width:250px">${escapeHtml(t.file||'—')}</td>
+      </tr>`;
+  }).join('');
+
+  function escapeHtml(s) {
+    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  return `<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background:#fff; color:#1F2937; }
+  .header { background: linear-gradient(135deg,#0A0F1E 0%,#1E3A5F 100%); color:#fff; padding:32px 40px; }
+  .header-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  .logo { font-size:24px; font-weight:800; letter-spacing:1px; }
+  .logo span { color:#2563EB; }
+  .subtitle { font-size:12px; color:#94A3B8; margin-top:4px; }
+  .date { font-size:12px; color:#94A3B8; text-align:right; }
+  .summary { display:flex; gap:20px; padding:24px 40px; background:#F8FAFC; border-bottom:1px solid #E5E7EB; }
+  .stat-box { flex:1; background:#fff; border:1px solid #E5E7EB; border-radius:8px; padding:16px; text-align:center; }
+  .stat-num { font-size:28px; font-weight:800; }
+  .stat-lbl { font-size:11px; color:#6B7280; margin-top:4px; text-transform:uppercase; letter-spacing:0.5px; }
+  .section { padding:24px 40px; }
+  .section-title { font-size:16px; font-weight:700; color:#1F2937; margin-bottom:16px; padding-bottom:8px; border-bottom:2px solid #2563EB; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  thead tr { background:#1E3A5F; color:#fff; }
+  thead th { padding:10px 12px; text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; font-weight:600; }
+  tbody tr:hover { background:#EFF6FF; }
+  .no-threats { text-align:center; padding:48px; color:#10B981; font-size:16px; font-weight:700; }
+  .footer { text-align:center; padding:20px; font-size:11px; color:#9CA3AF; border-top:1px solid #E5E7EB; margin-top:20px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-top">
+      <div>
+        <div class="logo">🛡️ Guard<span>Pilot</span> Pro</div>
+        <div class="subtitle">Rapport de sécurité — S.O.S INFO LUDO</div>
+      </div>
+      <div class="date">
+        <div style="font-size:14px;font-weight:700">${now}</div>
+        <div style="font-size:11px;color:#94A3B8;margin-top:2px">Date du rapport</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="summary">
+    <div class="stat-box">
+      <div class="stat-num" style="color:#EF4444">${critical}</div>
+      <div class="stat-lbl">Critiques</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-num" style="color:#F59E0B">${high}</div>
+      <div class="stat-lbl">Élevés</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-num" style="color:#3B82F6">${medium}</div>
+      <div class="stat-lbl">Moyens</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-num" style="color:#1F2937">${threats.length}</div>
+      <div class="stat-lbl">Total menaces</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-num" style="color:#6B7280">${stats.totalScans||0}</div>
+      <div class="stat-lbl">Scans effectués</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-num" style="color:#8B5CF6">${stats.quarantined||0}</div>
+      <div class="stat-lbl">Fichiers en quarantaine</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Détail des menaces détectées</div>
+    ${threats.length === 0
+      ? `<div class="no-threats">✅ Aucune menace détectée — système sain</div>`
+      : `<table>
+          <thead><tr>
+            <th>#</th><th>Sévérité</th><th>Type</th><th>Description</th><th>Fichier / Chemin</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`
+    }
+  </div>
+
+  <div class="footer">
+    GuardPilot Pro v1.1.0 — S.O.S INFO LUDO — Rapport généré le ${now}
+  </div>
+</body>
+</html>`;
+}
+
+ipcMain.handle('export-pdf', async (_, data) => {
   const savePath = await dialog.showSaveDialog(mainWindow, {
     title: 'Exporter le rapport de sécurité',
     defaultPath: `GuardPilot_Rapport_${new Date().toISOString().slice(0,10)}.pdf`,
@@ -235,8 +555,27 @@ ipcMain.handle('export-pdf', async () => {
   });
   if (savePath.canceled || !savePath.filePath) return { success:false };
   try {
-    const data = await mainWindow.webContents.printToPDF({ printBackground:true, pageSize:'A4' });
-    fs.writeFileSync(savePath.filePath, data);
+    const html = buildReportHTML(data || {});
+    // Write HTML to temp file and load it in a hidden window
+    const tmpHtml = path.join(os.tmpdir(), `guardpilot_report_${Date.now()}.html`);
+    fs.writeFileSync(tmpHtml, html, 'utf8');
+
+    const win = new BrowserWindow({
+      show: false,
+      width: 1200, height: 900,
+      webPreferences: { nodeIntegration: false, contextIsolation: true }
+    });
+    await win.loadFile(tmpHtml);
+    // Wait for page to fully render
+    await new Promise(r => setTimeout(r, 800));
+    const pdfData = await win.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      margins: { marginType: 'custom', top: 0, bottom: 0, left: 0, right: 0 }
+    });
+    win.close();
+    try { fs.unlinkSync(tmpHtml); } catch(e) {}
+    fs.writeFileSync(savePath.filePath, pdfData);
     shell.openPath(savePath.filePath);
     return { success:true };
   } catch(e) { return { success:false, error:e.message }; }
@@ -245,6 +584,9 @@ ipcMain.handle('export-pdf', async () => {
 ipcMain.on('win-min',   () => mainWindow?.minimize());
 ipcMain.on('win-max',   () => mainWindow?.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize());
 ipcMain.on('win-close', () => mainWindow?.close());
+
+// Disable "Not Responding" hang detection — scan worker does heavy I/O
+app.commandLine.appendSwitch('disable-hang-monitor');
 
 // ── Main window ────────────────────────────────────────────────────────────────
 let mainWindow;

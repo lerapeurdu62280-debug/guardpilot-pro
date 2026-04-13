@@ -11,6 +11,8 @@ const State = {
   scanning: false,
   stats: null,
   defenderStatus: null,
+  theme: 'dark',
+  exclusions: [],
 };
 
 // ── Utils ─────────────────────────────────────────────────────────────────────
@@ -69,7 +71,10 @@ function renderShell() {
           ${State.realtimeActive ? 'Protection active' : 'Protection inactive'}
         </span>
       </div>
-      <div style="font-size:10px;color:var(--text3)">SOS INFO LUDO</div>
+      <div style="display:flex;align-items:center;gap:8px;-webkit-app-region:no-drag">
+        <button class="btn btn-ghost btn-sm" style="height:24px;padding:0 8px;font-size:11px" onclick="toggleTheme()" title="Basculer thème">${State.theme==='dark'?'☀️':'🌙'}</button>
+        <span style="font-size:10px;color:var(--text3)">SOS INFO LUDO</span>
+      </div>
     </div>
     <div class="layout">
       <div class="sidebar">
@@ -115,6 +120,10 @@ const PAGES = [
   { id:'vulns',        icon:'🔐', label:'Vulnérabilités',        section:'ANALYSE' },
   { id:'quarantine',   icon:'🔒', label:'Quarantaine',           section:'GESTION', badge:'qtCount' },
   { id:'history',      icon:'📅', label:'Historique scans',      section:'GESTION' },
+  { id:'actionlog',    icon:'📝', label:'Journal des actions',   section:'GESTION' },
+  { id:'stats',        icon:'📊', label:'Statistiques',          section:'GESTION' },
+  { id:'exclusions',   icon:'🚫', label:'Exclusions',            section:'PARAMÈTRES' },
+  { id:'schedule',     icon:'⏰', label:'Scans planifiés',       section:'PARAMÈTRES' },
   { id:'license',      icon:'🔑', label:'Licence',               section:'COMPTE' },
 ];
 
@@ -191,6 +200,10 @@ function renderPage(page) {
     case 'vulns':      renderVulns(); break;
     case 'quarantine': renderQuarantine(); break;
     case 'history':    renderHistory(); break;
+    case 'actionlog':  renderActionLog(); break;
+    case 'stats':      renderStats(); break;
+    case 'exclusions': renderExclusions(); break;
+    case 'schedule':   renderSchedule(); break;
     case 'license':    renderLicense(); break;
     default: renderDashboard();
   }
@@ -199,25 +212,20 @@ function renderPage(page) {
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 async function renderDashboard() {
   setContent(`<div class="loading"><div class="spinner"></div>Analyse de sécurité...</div>`);
-  const [stats, lastScan, defRes, rtStatus] = await Promise.all([
-    gp.getStats(), gp.getLastScan(), gp.getDefenderStatus(), gp.getRealtimeStatus()
+  const [stats, lastScan, rtStatus, sigInfo] = await Promise.all([
+    gp.getStats(), gp.getLastScan(), gp.getRealtimeStatus(), gp.getSignaturesInfo()
   ]);
   State.stats = stats;
-  State.defenderStatus = defRes.status;
   State.realtimeActive = rtStatus.active;
   updateRtStatus();
 
-  const ds = defRes.status || {};
   const rtOk = rtStatus.active;
-  const avOk = ds.AntivirusEnabled;
-  const fwOk = true; // assumed
   const lastThreatCount = lastScan?.count || 0;
 
-  // Score calculation
+  // Score calculation — GuardPilot engine only, no Windows Defender
   let score = 100;
-  if (!rtOk) score -= 25;
-  if (!avOk) score -= 30;
-  if (lastThreatCount > 0) score -= Math.min(30, lastThreatCount * 5);
+  if (!rtOk) score -= 35;
+  if (lastThreatCount > 0) score -= Math.min(40, lastThreatCount * 5);
   score = Math.max(0, score);
   const scoreColor = score >= 80 ? '#10B981' : score >= 50 ? '#F59E0B' : '#EF4444';
   const scoreLabel = score >= 80 ? 'PROTÉGÉ' : score >= 50 ? 'ATTENTION' : 'DANGER';
@@ -256,11 +264,11 @@ async function renderDashboard() {
           <div class="sc-value" style="color:${rtOk?'var(--green)':'var(--red)'};font-size:16px">${rtOk?'Active':'Inactive'}</div>
           <div class="sc-sub">${rtOk?'Surveillance en cours':'Cliquez pour activer'}</div>
         </div>
-        <div class="status-card" style="--card-color:${avOk?'#10B981':'#EF4444'}">
-          <div class="sc-icon">🪟</div>
-          <div class="sc-label">Windows Defender</div>
-          <div class="sc-value" style="color:${avOk?'var(--green)':'var(--red)'};font-size:16px">${avOk?'Actif':'Inactif'}</div>
-          <div class="sc-sub">Antivirus Microsoft</div>
+        <div class="status-card" style="--card-color:#8B5CF6">
+          <div class="sc-icon">🛡️</div>
+          <div class="sc-label">Moteur GuardPilot</div>
+          <div class="sc-value" style="color:var(--purple, #8B5CF6);font-size:13px">${sigInfo?.version || '—'}</div>
+          <div class="sc-sub">${sigInfo?.hashCount ?? '—'} signatures chargées</div>
         </div>
         <div class="status-card" style="--card-color:#3B82F6">
           <div class="sc-icon">🔍</div>
@@ -346,6 +354,10 @@ async function exportPDFReport() {
   const stats = await gp.getStats();
   await gp.exportPDF({ threats: State.currentThreats || [], stats });
 }
+async function exportWordReport() {
+  const stats = await gp.getStats();
+  await gp.exportWord({ threats: State.currentThreats || [], stats });
+}
 
 async function startQuickScan() {
   if (State.scanning) return;
@@ -374,6 +386,7 @@ async function startQuickScan() {
     State.currentThreats = res.threats || [];
     if (res.threats.length > 0) State.rtThreats.push(...res.threats);
     showScanResults(res.threats, 'rapide');
+    promptAutoPDF(res.threats || []);
   } catch(e) {
     State.scanning = false;
     toast('Erreur lors du scan', 'error');
@@ -407,6 +420,7 @@ async function startFullScan() {
     State.currentThreats = res.threats || [];
     if (res.threats.length > 0) State.rtThreats.push(...res.threats);
     showScanResults(res.threats, 'complet');
+    promptAutoPDF(res.threats || []);
   } catch(e) {
     State.scanning = false;
     toast('Erreur lors du scan', 'error');
@@ -474,6 +488,8 @@ function showScanResults(threats, type) {
           ${high>0?`<span class="badge badge-amber">${high} ÉLEVÉ(S)</span>`:''}
           <button class="btn btn-ghost btn-sm" onclick="quarantineAll()">🔒 Tout mettre en quarantaine</button>
           <button class="btn btn-ghost btn-sm" onclick="exportPDFReport()">📄 PDF</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportWordReport()">📝 Word</button>
+          <button class="btn btn-primary btn-sm" onclick="renderClientReport()">👁 Vue client</button>
         </div>
       </div>
       <div class="threat-list">
@@ -484,18 +500,33 @@ function showScanResults(threats, type) {
   toast(`⚠️ ${threats.length} menace(s) détectée(s) !`, 'error');
 }
 
+function riskScore(t) {
+  const base = { CRITICAL:90, HIGH:65, MEDIUM:35 }[(t.severity||'').toUpperCase()] || 15;
+  return Math.min(100, base + (t.type === 'KNOWN_MALWARE' || t.type === 'RANSOMWARE' ? 10 : 0));
+}
+function riskColor(score) {
+  return score >= 80 ? 'var(--red)' : score >= 50 ? 'var(--amber)' : 'var(--blue)';
+}
+function fSafe(s) { return escHtml((s||'').replace(/'/g,"&#39;")); }
+
 function renderThreatItem(t, withActions = false) {
+  const score = riskScore(t);
   return `
     <div class="threat-item ${severityClass(t.severity)}">
       <span class="threat-icon">${severityIcon(t.severity)}</span>
       <div class="threat-info">
-        <div class="threat-desc">${severityBadge(t.severity)} ${escHtml(t.desc)}</div>
+        <div class="threat-desc">${severityBadge(t.severity)} ${escHtml(t.desc||'')}</div>
         <div class="threat-file">${escHtml(t.file||'')}</div>
         ${t.date ? `<div style="font-size:10px;color:var(--text3);margin-top:2px">${fmtDate(t.date)}</div>` : ''}
       </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:2px;flex-shrink:0;margin:0 8px;min-width:36px">
+        <div style="font-size:16px;font-weight:900;color:${riskColor(score)}">${score}</div>
+        <div style="font-size:9px;color:var(--text3)">RISQUE</div>
+      </div>
       ${withActions && t.file ? `
         <div class="threat-actions">
-          <button class="btn btn-danger btn-sm" onclick="quarantineOne('${escHtml(t.file.replace(/'/g,"&#39;"))}')">🔒 Quarantaine</button>
+          <button class="btn btn-danger btn-sm" onclick="quarantineOne('${fSafe(t.file)}')">🔒 Quarantaine</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--red);border-color:var(--red-b)" onclick="deleteFileDirect('${fSafe(t.file)}')">🗑 Supprimer</button>
           ${t.canFix ? `<button class="btn btn-ghost btn-sm" onclick="fixThreat(${JSON.stringify(JSON.stringify(t)).slice(1,-1)})">🔧 Corriger</button>` : ''}
         </div>
       ` : ''}
@@ -505,8 +536,10 @@ function renderThreatItem(t, withActions = false) {
 
 async function quarantineOne(filePath) {
   const res = await gp.quarantineFile(filePath);
-  if (res.success) { toast('Fichier mis en quarantaine', 'success'); }
-  else toast(res.error || 'Erreur', 'error');
+  if (res.success) {
+    toast('Fichier mis en quarantaine', 'success');
+    await gp.logAction({ type: 'quarantine', desc: 'Mis en quarantaine', file: filePath });
+  } else toast(res.error || 'Erreur', 'error');
 }
 
 async function quarantineAll() {
@@ -514,7 +547,7 @@ async function quarantineAll() {
   for (const t of State.currentThreats) {
     if (t.file) {
       const res = await gp.quarantineFile(t.file);
-      if (res.success) count++;
+      if (res.success) { count++; await gp.logAction({ type: 'quarantine', desc: t.desc || 'Mis en quarantaine', file: t.file }); }
     }
   }
   toast(`${count} fichier(s) mis en quarantaine`, 'success');
@@ -523,9 +556,341 @@ async function quarantineAll() {
 async function fixThreat(t) {
   if (t.type === 'SUSPICIOUS_AUTORUN' && t.fixKey && t.fixName) {
     const res = await gp.removeAutorun({ key: t.fixKey, name: t.fixName });
-    if (res.success) toast('Entrée de démarrage supprimée', 'success');
-    else toast(res.error || 'Erreur', 'error');
+    if (res.success) {
+      toast('Entrée de démarrage supprimée', 'success');
+      await gp.logAction({ type: 'fix', desc: `Autorun supprimé: ${t.fixName}`, file: t.file });
+    } else toast(res.error || 'Erreur', 'error');
   }
+}
+
+async function deleteFileDirect(filePath) {
+  if (!confirm(`Supprimer définitivement ce fichier ?\n\n${filePath}\n\nCette action est irréversible.`)) return;
+  const res = await gp.deleteFile(filePath);
+  if (res.success) {
+    toast('Fichier supprimé définitivement', 'success');
+    await gp.logAction({ type: 'delete', desc: `Fichier supprimé`, file: filePath });
+    State.currentThreats = State.currentThreats.filter(t => t.file !== filePath);
+  } else toast(res.error || 'Impossible de supprimer', 'error');
+}
+
+// ── Drag & drop file analysis ─────────────────────────────────────────────────
+function initDragDrop() {
+  document.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    const zone = document.getElementById('drop-zone');
+    if (zone) zone.classList.add('drag-over');
+  });
+  document.addEventListener('dragleave', (e) => {
+    if (!e.relatedTarget || e.relatedTarget === document.documentElement) {
+      const zone = document.getElementById('drop-zone');
+      if (zone) zone.classList.remove('drag-over');
+    }
+  });
+  document.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    const zone = document.getElementById('drop-zone');
+    if (zone) zone.classList.remove('drag-over');
+    const files = Array.from(e.dataTransfer.files);
+    if (!files.length) return;
+    navTo('scan');
+    await new Promise(r => setTimeout(r, 50));
+    const results = document.getElementById('scan-results');
+    if (!results) return;
+    results.innerHTML = `<div class="panel"><div class="panel-header"><div class="panel-title">📂 Analyse de ${files.length} fichier(s)...</div></div><div style="padding:16px;color:var(--text3)">Analyse en cours...</div></div>`;
+    const allThreats = [];
+    for (const file of files) {
+      const res = await gp.analyzeFile(file.path);
+      allThreats.push(...(res.threats || []));
+    }
+    State.currentThreats = allThreats;
+    showScanResults(allThreats, 'fichier(s) glissé(s)');
+  });
+}
+
+// ── Theme toggle ──────────────────────────────────────────────────────────────
+function applyTheme(theme) {
+  State.theme = theme;
+  document.documentElement.setAttribute('data-theme', theme);
+}
+
+async function toggleTheme() {
+  const newTheme = State.theme === 'dark' ? 'light' : 'dark';
+  applyTheme(newTheme);
+  await gp.setPref('theme', newTheme);
+  // Re-render shell to update icon
+  const wasPage = State.page;
+  renderShell();
+  navTo(wasPage);
+}
+
+// ── Auto PDF prompt after scan ────────────────────────────────────────────────
+async function promptAutoPDF(threats) {
+  if (threats.length === 0) return;
+  await new Promise(r => setTimeout(r, 800));
+  if (confirm(`${threats.length} menace(s) trouvée(s). Générer un rapport PDF pour le client ?`)) {
+    await exportPDFReport();
+  }
+}
+
+// ── Client report mode ────────────────────────────────────────────────────────
+function renderClientReport() {
+  const threats = State.currentThreats || [];
+  const critical = threats.filter(t => (t.severity||'').toUpperCase() === 'CRITICAL').length;
+  const high = threats.filter(t => (t.severity||'').toUpperCase() === 'HIGH').length;
+  const statusColor = threats.length === 0 ? '#10B981' : critical > 0 ? '#EF4444' : '#F59E0B';
+  const statusMsg = threats.length === 0 ? 'Votre ordinateur est sain ✅' : `${threats.length} problème(s) de sécurité détecté(s)`;
+
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
+  <title>Rapport GuardPilot — S.O.S INFO LUDO</title>
+  <style>
+    body{font-family:'Segoe UI',Arial,sans-serif;margin:0;padding:40px;background:#f5f7fa;color:#1F2937}
+    .header{background:linear-gradient(135deg,#0A0F1E,#1E3A5F);color:#fff;padding:30px 40px;border-radius:12px;margin-bottom:24px}
+    .logo{font-size:22px;font-weight:800}.sub{font-size:12px;color:#94A3B8;margin-top:4px}
+    .status-box{background:#fff;border-radius:12px;padding:30px;text-align:center;margin-bottom:24px;box-shadow:0 2px 12px rgba(0,0,0,0.08)}
+    .status-num{font-size:64px;font-weight:900;color:${statusColor}}
+    .status-msg{font-size:18px;font-weight:700;color:#1F2937;margin-top:8px}
+    .threat-row{background:#fff;border-radius:8px;padding:14px 18px;margin-bottom:8px;border-left:4px solid ${statusColor};box-shadow:0 1px 4px rgba(0,0,0,0.06)}
+    .threat-type{font-size:11px;font-weight:700;color:#6B7280;text-transform:uppercase}
+    .threat-desc{font-size:13px;font-weight:600;color:#1F2937;margin:4px 0}
+    .footer{text-align:center;font-size:12px;color:#9CA3AF;margin-top:32px}
+    @media print{body{background:#fff}}
+  </style></head><body>
+  <div class="header">
+    <div class="logo">🛡️ GuardPilot Pro — Rapport Sécurité</div>
+    <div class="sub">S.O.S INFO LUDO — ${new Date().toLocaleDateString('fr-FR', {day:'numeric',month:'long',year:'numeric'})}</div>
+  </div>
+  <div class="status-box">
+    <div class="status-num">${threats.length}</div>
+    <div class="status-msg">${statusMsg}</div>
+  </div>
+  ${threats.length > 0 ? `<div>${threats.map(t=>`
+    <div class="threat-row">
+      <div class="threat-type">${escHtml(t.type||'')} — ${escHtml(t.severity||'')}</div>
+      <div class="threat-desc">${escHtml(t.desc||'')}</div>
+      <div style="font-size:11px;color:#9CA3AF;margin-top:2px;font-family:monospace">${escHtml(t.file||'')}</div>
+    </div>`).join('')}</div>` : ''}
+  <div class="footer">Rapport généré par GuardPilot Pro — S.O.S INFO LUDO — Ludovic Tourniquet</div>
+  <script>window.print()</script></body></html>`);
+  win.document.close();
+}
+
+// ── Exclusions page ───────────────────────────────────────────────────────────
+async function renderExclusions() {
+  const excl = await gp.getExclusions();
+  State.exclusions = excl;
+  setContent(`
+    <div class="topbar">
+      <h1>🚫 Exclusions</h1>
+      <div class="topbar-actions">
+        <button class="btn btn-primary" onclick="addExclusion()">➕ Ajouter un dossier</button>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">🚫 Dossiers et fichiers exclus des scans</div>
+        <span class="badge badge-blue">${excl.length}</span>
+      </div>
+      <div style="padding:10px 0;font-size:12px;color:var(--text3);padding:12px 18px">
+        Ces chemins seront ignorés lors des scans — utile pour éviter les faux positifs sur les logiciels légitimes de vos clients.
+      </div>
+      ${excl.length === 0
+        ? '<div style="padding:32px;text-align:center;color:var(--text3)">Aucune exclusion configurée</div>'
+        : `<table class="data-table">
+            <thead><tr><th>Chemin exclu</th><th>Action</th></tr></thead>
+            <tbody>
+              ${excl.map(p => `
+                <tr>
+                  <td style="font-family:var(--font-mono);font-size:11px">${escHtml(p)}</td>
+                  <td><button class="btn btn-danger btn-sm" onclick="removeExclusion('${fSafe(p)}')">✕ Retirer</button></td>
+                </tr>`).join('')}
+            </tbody>
+          </table>`}
+    </div>
+  `);
+}
+
+async function addExclusion() {
+  const p = await gp.chooseExclusionPath();
+  if (!p) return;
+  await gp.addExclusion(p);
+  toast(`Exclusion ajoutée : ${p}`, 'success');
+  renderExclusions();
+}
+
+async function removeExclusion(p) {
+  await gp.removeExclusion(p);
+  toast('Exclusion retirée', 'info');
+  renderExclusions();
+}
+
+// ── Action log page ───────────────────────────────────────────────────────────
+async function renderActionLog() {
+  const log = await gp.getActionLog();
+  const icons = { quarantine:'🔒', delete:'🗑', fix:'🔧', restore:'↩' };
+  setContent(`
+    <div class="topbar">
+      <h1>📝 Journal des actions</h1>
+      <button class="btn btn-ghost" onclick="gp.clearActionLog().then(()=>renderActionLog())">🗑 Effacer</button>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Toutes les actions effectuées</div>
+        <span class="badge badge-blue">${log.length}</span>
+      </div>
+      ${log.length === 0
+        ? '<div style="padding:32px;text-align:center;color:var(--text3)">Aucune action enregistrée</div>'
+        : `<table class="data-table">
+            <thead><tr><th>Date</th><th>Action</th><th>Description</th><th>Fichier</th></tr></thead>
+            <tbody>
+              ${log.map(a => `
+                <tr>
+                  <td style="white-space:nowrap;font-size:11px">${fmtDate(a.date)}</td>
+                  <td>${icons[a.type]||'•'} ${escHtml(a.type||'')}</td>
+                  <td>${escHtml(a.desc||'')}</td>
+                  <td style="font-family:var(--font-mono);font-size:10px;color:var(--text3);max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(a.file||'—')}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>`}
+    </div>
+  `);
+}
+
+// ── Stats page ────────────────────────────────────────────────────────────────
+async function renderStats() {
+  setContent(`<div class="loading"><div class="spinner"></div>Calcul des statistiques...</div>`);
+  const s = await gp.getStats();
+
+  // Build monthly chart data from history
+  const months = {};
+  (s.history || []).forEach(h => {
+    const d = new Date(h.date);
+    const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    if (!months[key]) months[key] = { scans:0, threats:0 };
+    months[key].scans++;
+    months[key].threats += typeof h.threats === 'number' ? h.threats : 0;
+  });
+  const monthKeys = Object.keys(months).sort().slice(-6);
+  const maxScans = Math.max(1, ...monthKeys.map(k => months[k].scans));
+
+  setContent(`
+    <div class="topbar"><h1>📊 Statistiques</h1></div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:20px">
+      <div class="status-card" style="--card-color:#2563EB">
+        <div class="sc-icon">🔍</div>
+        <div class="sc-label">Total scans</div>
+        <div class="sc-value" style="color:var(--blue)">${s.totalScans}</div>
+        <div class="sc-sub">${s.scansThisMonth} ce mois-ci</div>
+      </div>
+      <div class="status-card" style="--card-color:#EF4444">
+        <div class="sc-icon">🦠</div>
+        <div class="sc-label">Menaces trouvées</div>
+        <div class="sc-value" style="color:var(--red)">${s.threatsFound}</div>
+        <div class="sc-sub">${s.threatsThisMonth} ce mois-ci</div>
+      </div>
+      <div class="status-card" style="--card-color:#10B981">
+        <div class="sc-icon">🔒</div>
+        <div class="sc-label">En quarantaine</div>
+        <div class="sc-value" style="color:var(--green)">${s.quarantined}</div>
+        <div class="sc-sub">${s.actionsTotal} actions totales</div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">📈 Activité des 6 derniers mois</div></div>
+      <div style="padding:20px">
+        ${monthKeys.length === 0
+          ? '<div style="text-align:center;color:var(--text3);padding:20px">Pas encore de données</div>'
+          : monthKeys.map(k => `
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+              <div style="font-size:11px;color:var(--text3);width:55px;flex-shrink:0">${k}</div>
+              <div style="flex:1;background:var(--bg);border-radius:4px;height:20px;overflow:hidden">
+                <div style="height:100%;width:${Math.round((months[k].scans/maxScans)*100)}%;background:linear-gradient(90deg,var(--blue),var(--cyan));border-radius:4px;transition:width .5s"></div>
+              </div>
+              <div style="font-size:11px;color:var(--text2);width:80px;flex-shrink:0">${months[k].scans} scan(s)</div>
+              <div style="font-size:11px;color:var(--red);width:60px;flex-shrink:0">${months[k].threats} menace(s)</div>
+            </div>`).join('')}
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">📅 Dernier scan</div></div>
+      <div style="padding:16px 20px;font-size:13px;color:var(--text2)">
+        ${s.lastScan ? fmtDate(s.lastScan) : 'Aucun scan effectué'}
+      </div>
+    </div>
+  `);
+}
+
+// ── Scheduled scans page ──────────────────────────────────────────────────────
+async function renderSchedule() {
+  const tasks = await gp.getScheduledScans();
+  setContent(`
+    <div class="topbar">
+      <h1>⏰ Scans planifiés</h1>
+    </div>
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">Planifier un scan automatique</div></div>
+      <div style="padding:20px;display:flex;flex-direction:column;gap:14px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:10px;align-items:end">
+          <div>
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">TYPE DE SCAN</label>
+            <select id="sch-type" class="input-field">
+              <option value="quick">Scan rapide</option>
+              <option value="full">Scan complet</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">FRÉQUENCE</label>
+            <select id="sch-freq" class="input-field" onchange="updateSchDay()">
+              <option value="daily">Tous les jours</option>
+              <option value="weekly">Hebdomadaire</option>
+            </select>
+          </div>
+          <div id="sch-day-wrap">
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">HEURE</label>
+            <input type="time" id="sch-time" value="08:00" class="input-field">
+          </div>
+          <button class="btn btn-primary" onclick="scheduleScan()">➕ Planifier</button>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">⏰ Tâches planifiées actives</div>
+        <span class="badge badge-blue">${tasks.length}</span>
+      </div>
+      ${tasks.length === 0
+        ? '<div style="padding:32px;text-align:center;color:var(--text3)">Aucun scan planifié</div>'
+        : `<table class="data-table">
+            <thead><tr><th>Tâche</th><th>État</th><th>Action</th></tr></thead>
+            <tbody>
+              ${tasks.map(t => `
+                <tr>
+                  <td>${escHtml(t.TaskName||'')}</td>
+                  <td><span class="badge ${t.State===3?'badge-green':'badge-gray'}">${t.State===3?'Actif':'Inactif'}</span></td>
+                  <td><button class="btn btn-danger btn-sm" onclick="unscheduleScan('${fSafe(t.TaskName)}')">✕ Supprimer</button></td>
+                </tr>`).join('')}
+            </tbody>
+          </table>`}
+    </div>
+  `);
+}
+
+async function scheduleScan() {
+  const scanType = document.getElementById('sch-type')?.value || 'quick';
+  const freq = document.getElementById('sch-freq')?.value || 'daily';
+  const time = document.getElementById('sch-time')?.value || '08:00';
+  const trigger = { type: freq, time };
+  toast('Planification en cours...', 'info');
+  const res = await gp.scheduleScan({ scanType, trigger });
+  if (res.success) { toast('Scan planifié avec succès', 'success'); renderSchedule(); }
+  else toast(res.error || 'Erreur de planification', 'error');
+}
+
+async function unscheduleScan(name) {
+  if (!confirm(`Supprimer la tâche planifiée "${name}" ?`)) return;
+  const res = await gp.unscheduleScan(name);
+  if (res.success) { toast('Tâche supprimée', 'success'); renderSchedule(); }
+  else toast('Erreur', 'error');
 }
 
 // ── Real-time page ────────────────────────────────────────────────────────────
@@ -1196,8 +1561,16 @@ async function boot() {
   const rtStatus = await gp.getRealtimeStatus();
   State.realtimeActive = rtStatus.active;
 
+  // Load preferences
+  const prefs = await gp.getPrefs();
+  applyTheme(prefs.theme || 'dark');
+
+  // Load exclusions into state
+  State.exclusions = await gp.getExclusions();
+
   renderShell();
   navTo('dashboard');
+  initDragDrop();
 }
 
 document.addEventListener('DOMContentLoaded', boot);
