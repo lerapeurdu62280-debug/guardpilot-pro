@@ -194,6 +194,10 @@ const WHITELIST_PATHS = [
   'dotnet', '.net', 'vcredist', 'directx', 'visual c++',
   // SOS INFO LUDO own software
   'repairpilot', 'recoverypilot', 'stockpilot', 'diagpilot', 'cleanpilot', 'guardpilot',
+  // Package managers — legitimately use -executionpolicy bypass
+  'chocolatey', 'choco', 'unigetui', 'winget', 'scoop',
+  '\\chocolatey\\helpers\\', '\\chocolatey\\lib\\', '\\chocolatey\\bin\\',
+  '\\unigetui\\',
 ];
 
 // Whitelisted file hashes (known safe files that might trigger entropy/pattern checks)

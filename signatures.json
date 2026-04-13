@@ -1,0 +1,22 @@
+{
+  "version": "2026.04.13",
+  "updated": "2026-04-13",
+  "known_hashes": [
+    "fc525c9683e8b4a81a332dc5ced92203a3d10a2ea609a7c8f63b7b8aad2daf52",
+    "24d004a104d4d54034dbcffc2a4b19a11f39008a575aa614ea04703480b1022c",
+    "ed01ebfbc9eb5bbea545af4d01bf5f1071661840480439c6e5babe8e080e41aa",
+    "027cc450ef5f8c5f653329641ec1fed91f694e0d229928963b30f6b0d7d3a745",
+    "8d3f68b16f0710f858d8c1d2c699260e6f43161a5510abb0e7ba567adcd3468b",
+    "0545f842ca2eb77bcac0fd0d8cb75b0cdc5b9c4a4f50f7ae06e79d74cb82fb3f",
+    "9aa1f37517458d635eae4f9b43cb4770880ea0ee171e7e4ad155bbdee0cbe732",
+    "e2a24ab94f865caeacdf2c3ad015f31f23008ac6db8312c2cbfb32e4a5466ea2",
+    "5b5262651d305f43a98b1e9eaa65ea7d8db7f2e3cb1e528a8aa64ae2a49a85c8",
+    "4a657165db2a1f01d3d8c09bed1cad7bd76a8d4c2e0f3a5b7c9d1e3f5a7b9c1"
+  ],
+  "whitelist_paths": [
+    "chocolatey", "choco", "unigetui", "winget", "scoop",
+    "\\chocolatey\\helpers\\", "\\chocolatey\\lib\\", "\\chocolatey\\bin\\",
+    "\\unigetui\\"
+  ],
+  "ransomware_extensions_extra": []
+}

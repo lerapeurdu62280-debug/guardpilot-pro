@@ -104,7 +104,7 @@ const PAGES = [
   { id:'dashboard',    icon:'🏠', label:'Tableau de bord',       section:'PRINCIPAL' },
   { id:'scan',         icon:'🔍', label:'Scanner',               section:'PROTECTION' },
   { id:'realtime',     icon:'⚡', label:'Protection temps réel', section:'PROTECTION' },
-  { id:'defender',     icon:'🪟', label:'Windows Defender',      section:'PROTECTION' },
+  { id:'defender',     icon:'🛡️', label:'Signatures GuardPilot',  section:'PROTECTION' },
   { id:'registry',     icon:'📋', label:'Registre Windows',      section:'ANALYSE' },
   { id:'processes',    icon:'⚙️', label:'Processus',             section:'ANALYSE' },
   { id:'network',      icon:'🌐', label:'Réseau',                section:'ANALYSE' },
@@ -229,7 +229,7 @@ async function renderDashboard() {
       <h1>🏠 Tableau de bord sécurité</h1>
       <div class="topbar-actions">
         <button class="btn btn-primary" onclick="navTo('scan')">🔍 Lancer un scan</button>
-        <button class="btn btn-ghost" onclick="gp.exportPDF()">📄 Rapport PDF</button>
+        <button class="btn btn-ghost" onclick="exportPDFReport()">📄 Rapport PDF</button>
       </div>
     </div>
 
@@ -340,6 +340,11 @@ function renderScan() {
     </div>
     <div id="scan-results"></div>
   `);
+}
+
+async function exportPDFReport() {
+  const stats = await gp.getStats();
+  await gp.exportPDF({ threats: State.currentThreats || [], stats });
 }
 
 async function startQuickScan() {
@@ -468,7 +473,7 @@ function showScanResults(threats, type) {
           ${critical>0?`<span class="badge badge-red">${critical} CRITIQUE(S)</span>`:''}
           ${high>0?`<span class="badge badge-amber">${high} ÉLEVÉ(S)</span>`:''}
           <button class="btn btn-ghost btn-sm" onclick="quarantineAll()">🔒 Tout mettre en quarantaine</button>
-          <button class="btn btn-ghost btn-sm" onclick="gp.exportPDF()">📄 PDF</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportPDFReport()">📄 PDF</button>
         </div>
       </div>
       <div class="threat-list">
@@ -581,68 +586,78 @@ function renderRealtimePage() {
   `);
 }
 
-// ── Windows Defender ──────────────────────────────────────────────────────────
+// ── Moteur GuardPilot — Signatures ────────────────────────────────────────────
 async function renderDefender() {
-  setContent(`<div class="loading"><div class="spinner"></div>Chargement Windows Defender...</div>`);
-  const [defRes, threatRes] = await Promise.all([gp.getDefenderStatus(), gp.getDefenderThreats()]);
-  const ds = defRes.status || {};
-  const threats = threatRes.threats || [];
+  setContent(`<div class="loading"><div class="spinner"></div>Chargement des signatures...</div>`);
+  const info = await gp.getSignaturesInfo();
 
-  const rows = [
-    { label:'Antivirus', val:ds.AntivirusEnabled, ok:ds.AntivirusEnabled },
-    { label:'Anti-spyware', val:ds.AntispywareEnabled, ok:ds.AntispywareEnabled },
-    { label:'Protection temps réel', val:ds.RealTimeProtectionEnabled, ok:ds.RealTimeProtectionEnabled },
-    { label:'Protection accès', val:ds.OnAccessProtectionEnabled, ok:ds.OnAccessProtectionEnabled },
-    { label:'Protection réseau (NIS)', val:ds.NISEnabled, ok:ds.NISEnabled },
-    { label:'Protection IOAV', val:ds.IoavProtectionEnabled, ok:ds.IoavProtectionEnabled },
-    { label:'Signatures antivirus MAJ', val:ds.AntivirusSignatureLastUpdated ? fmtDate(ds.AntivirusSignatureLastUpdated) : '—', ok:!!ds.AntivirusSignatureLastUpdated },
-    { label:'Signatures anti-spyware MAJ', val:ds.AntispywareSignatureLastUpdated ? fmtDate(ds.AntispywareSignatureLastUpdated) : '—', ok:true },
-  ];
+  const isUpToDate = info.updated && info.updated === new Date().toISOString().slice(0,10);
+  const statusColor = isUpToDate ? 'var(--green)' : '#F59E0B';
+  const statusLabel = isUpToDate ? 'À jour' : 'Mise à jour disponible';
 
   setContent(`
     <div class="topbar">
-      <h1>🪟 Windows Defender</h1>
+      <h1>🛡️ Moteur de détection GuardPilot</h1>
       <div class="topbar-actions">
-        <button class="btn btn-primary" onclick="updateDefSigs()">🔄 Mettre à jour signatures</button>
+        <button class="btn btn-primary" onclick="updateGPSigs()" id="btn-update-sigs">🔄 Mettre à jour les signatures</button>
         <button class="btn btn-ghost" onclick="renderDefender()">↺ Actualiser</button>
       </div>
     </div>
-    <div class="panel">
-      <div class="panel-header"><div class="panel-title">🔒 Statut Windows Defender</div></div>
-      <table class="data-table">
-        <thead><tr><th>Composant</th><th>Statut</th></tr></thead>
-        <tbody>
-          ${rows.map(r => `
-            <tr>
-              <td><strong>${escHtml(r.label)}</strong></td>
-              <td>
-                ${r.val === true ? `<span class="badge badge-green">✅ Actif</span>`
-                  : r.val === false ? `<span class="badge badge-red">❌ Inactif</span>`
-                  : `<span style="font-size:12px">${escHtml(String(r.val))}</span>`}
-              </td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:20px">
+      <div class="status-card" style="--card-color:#2563EB">
+        <div class="sc-icon">🛡️</div>
+        <div class="sc-label">Version signatures</div>
+        <div class="sc-value" style="font-size:14px;color:var(--text)">${escHtml(info.version || '—')}</div>
+        <div class="sc-sub">Moteur GuardPilot</div>
+      </div>
+      <div class="status-card" style="--card-color:${statusColor}">
+        <div class="sc-icon">${isUpToDate ? '✅' : '🔔'}</div>
+        <div class="sc-label">Statut</div>
+        <div class="sc-value" style="color:${statusColor};font-size:14px">${statusLabel}</div>
+        <div class="sc-sub">${info.updated ? `Mise à jour : ${info.updated}` : 'Jamais mis à jour'}</div>
+      </div>
+      <div class="status-card" style="--card-color:#10B981">
+        <div class="sc-icon">🦠</div>
+        <div class="sc-label">Signatures chargées</div>
+        <div class="sc-value" style="color:var(--green)">${info.hashCount || '—'}</div>
+        <div class="sc-sub">Hachages malware connus</div>
+      </div>
     </div>
 
     <div class="panel">
-      <div class="panel-header">
-        <div class="panel-title">🦠 Menaces détectées par Defender</div>
-        <span class="badge ${threats.length>0?'badge-red':'badge-green'}">${threats.length}</span>
+      <div class="panel-header"><div class="panel-title">ℹ️ À propos du moteur de détection</div></div>
+      <div style="padding:20px;font-size:13px;color:var(--text2);line-height:1.8">
+        <p>GuardPilot utilise son <strong>propre moteur de détection</strong>, indépendant de Windows Defender.</p>
+        <br>
+        <p>🔍 <strong>Détection par hash SHA256</strong> — compare chaque fichier aux signatures connues</p>
+        <p>📝 <strong>Analyse des scripts</strong> — détecte les patterns PowerShell, VBS, BAT malveillants</p>
+        <p>📦 <strong>Analyse PE</strong> — détecte les exécutables packés et obfusqués</p>
+        <p>🔠 <strong>Double extension / RTL</strong> — détecte les techniques de camouflage de noms</p>
+        <p>📡 <strong>Extensions ransomware</strong> — ${getSigCount(info)} extensions connues surveillées</p>
+        <br>
+        <p style="color:var(--text3);font-size:11px">Les signatures sont hébergées sur GitHub et mises à jour régulièrement. Cliquez sur "Mettre à jour" pour récupérer les dernières définitions.</p>
       </div>
-      ${threats.length === 0
-        ? '<div style="padding:32px;text-align:center;color:var(--green);font-weight:700">✅ Aucune menace active dans Windows Defender</div>'
-        : `<div class="threat-list">${threats.map(t => renderThreatItem(t)).join('')}</div>`}
     </div>
   `);
 }
 
-async function updateDefSigs() {
-  toast('Mise à jour des signatures en cours...', 'info');
-  const res = await gp.updateDefenderSigs();
-  if (res.success) { toast('Signatures mises à jour !', 'success'); renderDefender(); }
-  else toast('Impossible de mettre à jour (connexion requise)', 'warn');
+function getSigCount(info) {
+  return info.source === 'cached' ? `${info.hashCount || 0}+ fichiers malveillants référencés` : 'base intégrée';
+}
+
+async function updateGPSigs() {
+  const btn = document.getElementById('btn-update-sigs');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Téléchargement...'; }
+  toast('Mise à jour des signatures GuardPilot en cours...', 'info');
+  const res = await gp.updateGuardPilotSigs();
+  if (res.success) {
+    toast(`✅ Signatures mises à jour — v${res.version} (${res.hashCount} hachages)`, 'success');
+    renderDefender();
+  } else {
+    toast(`Erreur : ${res.error || 'Connexion impossible'}`, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Mettre à jour les signatures'; }
+  }
 }
 
 // ── Registry audit ────────────────────────────────────────────────────────────

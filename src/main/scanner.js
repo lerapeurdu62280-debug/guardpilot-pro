@@ -10,12 +10,36 @@ const { KNOWN_HASHES, SUSPICIOUS_STRINGS_SCRIPTS, SUSPICIOUS_STRINGS_PE,
         SUSPICIOUS_PROCESS_PATTERNS, SUSPICIOUS_IP_RANGES, SAFE_PATHS,
         WHITELIST_PATHS, WHITELIST_HASHES } = require('./threats');
 const { analyzePESections, checkDoubleExtension, checkSignature } = require('./audit_advanced');
+const { loadCachedSignatures } = require('./updater');
+
+// ── Dynamic signatures (merged with built-in on load) ────────────────────────
+function buildDynamicSignatures() {
+  const cached = loadCachedSignatures();
+  const hashes = new Set(KNOWN_HASHES);
+  const whitelist = [...WHITELIST_PATHS];
+  const ransomExt = [...RANSOMWARE_EXTENSIONS];
+
+  if (cached) {
+    (cached.known_hashes || []).forEach(h => hashes.add(h));
+    (cached.whitelist_paths || []).forEach(p => { if (!whitelist.includes(p)) whitelist.push(p); });
+    (cached.ransomware_extensions_extra || []).forEach(e => { if (!ransomExt.includes(e)) ransomExt.push(e); });
+  }
+  return { hashes, whitelist, ransomExt };
+}
+
+let _sigs = null;
+function getSigs() {
+  if (!_sigs) _sigs = buildDynamicSignatures();
+  return _sigs;
+}
+// Call this after a signature update to reload
+function reloadSignatures() { _sigs = null; }
 
 // Check if a path is whitelisted (known legitimate software)
 function isWhitelisted(filePath) {
   if (!filePath) return false;
   const lower = filePath.toLowerCase();
-  return WHITELIST_PATHS.some(w => lower.includes(w.toLowerCase()));
+  return getSigs().whitelist.some(w => lower.includes(w.toLowerCase()));
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -115,7 +139,7 @@ function analyzeFile(filePath) {
   // 1. Hash check — always reliable, always run
   const hash = sha256(filePath);
   if (hash && WHITELIST_HASHES.has(hash)) return []; // Safe hash, skip
-  if (hash && KNOWN_HASHES.has(hash)) {
+  if (hash && getSigs().hashes.has(hash)) {
     threats.push({ type: 'KNOWN_MALWARE', severity: 'CRITICAL',
       desc: `Malware connu détecté (hash: ${hash.slice(0,16)}...)`, file: filePath });
     return threats; // No need to check further
@@ -129,7 +153,7 @@ function analyzeFile(filePath) {
   }
 
   // 3. Ransomware extension — always flag regardless of location
-  if (RANSOMWARE_EXTENSIONS.includes(ext)) {
+  if (getSigs().ransomExt.includes(ext)) {
     threats.push({ type: 'RANSOMWARE', severity: 'CRITICAL',
       desc: `Extension ransomware détectée: ${ext}`, file: filePath });
     return threats;
@@ -629,4 +653,5 @@ module.exports = {
   auditRegistry, auditProcesses, auditNetwork, auditVulnerabilities,
   quarantineFile, restoreQuarantined, deleteQuarantined,
   removeAutorun,
+  reloadSignatures,
 };

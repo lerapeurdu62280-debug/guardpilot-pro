@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('gp', {
   auditVulnerabilities: ()  => ipcRenderer.invoke('audit-vulnerabilities'),
   getDefenderStatus:()      => ipcRenderer.invoke('get-defender-status'),
   updateDefenderSigs:()     => ipcRenderer.invoke('update-defender-signatures'),
+  updateGuardPilotSigs: ()  => ipcRenderer.invoke('update-guardpilot-signatures'),
+  getSignaturesInfo:    ()  => ipcRenderer.invoke('get-signatures-info'),
   getDefenderThreats:()     => ipcRenderer.invoke('get-defender-threats'),
 
   quarantineFile:   (p)     => ipcRenderer.invoke('quarantine-file', p),
@@ -51,7 +53,7 @@ contextBridge.exposeInMainWorld('gp', {
   getLastScan:      ()      => ipcRenderer.invoke('get-last-scan'),
   getStats:         ()      => ipcRenderer.invoke('get-stats'),
   clearHistory:     ()      => ipcRenderer.invoke('clear-history'),
-  exportPDF:        ()      => ipcRenderer.invoke('export-pdf'),
+  exportPDF:        (data)  => ipcRenderer.invoke('export-pdf', data),
 
   onScanProgress:   (cb)    => ipcRenderer.on('scan-progress', (_, d) => cb(d)),
   onRealtimeThreat: (cb)    => ipcRenderer.on('realtime-threat', (_, d) => cb(d)),
