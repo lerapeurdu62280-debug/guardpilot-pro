@@ -77,8 +77,15 @@ contextBridge.exposeInMainWorld('gp', {
 
   openRepairPilot:  (data)  => ipcRenderer.invoke('open-repairpilot', data),
 
+  getAutostart:     ()      => ipcRenderer.invoke('get-autostart'),
+  setAutostart:     (v)     => ipcRenderer.invoke('set-autostart', v),
+  disableDefender:  ()      => ipcRenderer.invoke('disable-defender'),
+  enableDefender:   ()      => ipcRenderer.invoke('enable-defender'),
+  getDefenderRealtime: ()   => ipcRenderer.invoke('get-defender-realtime'),
+
   onScanProgress:   (cb)    => ipcRenderer.on('scan-progress', (_, d) => cb(d)),
   onRealtimeThreat: (cb)    => ipcRenderer.on('realtime-threat', (_, d) => cb(d)),
   onRealtimeActivity:(cb)   => ipcRenderer.on('realtime-activity', (_, d) => cb(d)),
+  onTrayAction:     (cb)    => ipcRenderer.on('tray-action', (_, d) => cb(d)),
   removeAllListeners:(ch)   => ipcRenderer.removeAllListeners(ch),
 });

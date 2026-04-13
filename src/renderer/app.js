@@ -124,6 +124,7 @@ const PAGES = [
   { id:'stats',        icon:'📊', label:'Statistiques',          section:'GESTION' },
   { id:'exclusions',   icon:'🚫', label:'Exclusions',            section:'PARAMÈTRES' },
   { id:'schedule',     icon:'⏰', label:'Scans planifiés',       section:'PARAMÈTRES' },
+  { id:'settings',     icon:'⚙️', label:'Paramètres système',   section:'PARAMÈTRES' },
   { id:'license',      icon:'🔑', label:'Licence',               section:'COMPTE' },
 ];
 
@@ -204,6 +205,7 @@ function renderPage(page) {
     case 'stats':      renderStats(); break;
     case 'exclusions': renderExclusions(); break;
     case 'schedule':   renderSchedule(); break;
+    case 'settings':   renderSettings(); break;
     case 'license':    renderLicense(); break;
     default: renderDashboard();
   }
@@ -1517,6 +1519,96 @@ async function removeWMI(cls, name) {
   else toast(res.error || 'Erreur', 'error');
 }
 
+// ── Settings ──────────────────────────────────────────────────────────────────
+async function renderSettings() {
+  setContent(`<div class="loading"><div class="spinner"></div>Chargement...</div>`);
+  const [autostart, defRt] = await Promise.all([
+    gp.getAutostart(),
+    gp.getDefenderRealtime(),
+  ]);
+
+  const defenderDisabled = defRt?.disabled ?? false;
+
+  setContent(`
+    <div class="topbar">
+      <h1>⚙️ Paramètres système</h1>
+    </div>
+
+    <div class="panel" style="max-width:680px">
+      <div class="panel-header"><div class="panel-title">🚀 Démarrage</div></div>
+      <div style="padding:20px;display:flex;flex-direction:column;gap:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px;background:var(--bg2);border-radius:8px">
+          <div>
+            <div style="font-weight:600;margin-bottom:4px">Démarrage automatique avec Windows</div>
+            <div style="font-size:12px;color:var(--text3)">GuardPilot se lance automatiquement et reste dans la barre des tâches</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="chk-autostart" ${autostart ? 'checked' : ''} onchange="toggleAutostart(this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="max-width:680px;margin-top:16px">
+      <div class="panel-header"><div class="panel-title">🛡️ Antivirus Windows Defender</div></div>
+      <div style="padding:20px;display:flex;flex-direction:column;gap:16px">
+        <div style="padding:12px 16px;border-radius:8px;background:${defenderDisabled ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.1)'};border:1px solid ${defenderDisabled ? '#10B981' : '#F59E0B'}">
+          <div style="font-weight:600;color:${defenderDisabled ? 'var(--green)' : '#F59E0B'}">
+            ${defenderDisabled ? '✅ Windows Defender désactivé — GuardPilot est le seul antivirus actif' : '⚠️ Windows Defender est actif en parallèle de GuardPilot'}
+          </div>
+          <div style="font-size:12px;color:var(--text3);margin-top:4px">
+            ${defenderDisabled ? 'GuardPilot assure seul la protection de votre système.' : 'Vous pouvez désactiver Defender pour laisser GuardPilot gérer seul la protection.'}
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px;background:var(--bg2);border-radius:8px">
+          <div>
+            <div style="font-weight:600;margin-bottom:4px">Désactiver Windows Defender (protection temps réel)</div>
+            <div style="font-size:12px;color:var(--text3)">Nécessite que la <b>Protection contre les falsifications</b> soit désactivée dans Sécurité Windows</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="chk-defender" ${defenderDisabled ? 'checked' : ''} onchange="toggleDefender(this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div style="font-size:11px;color:var(--text3);padding:0 4px">
+          Pour désactiver la protection contre les falsifications : <b>Démarrer → Sécurité Windows → Protection contre les virus → Paramètres de protection → Protection contre les falsifications → Désactiver</b>
+        </div>
+      </div>
+    </div>
+  `);
+}
+
+async function toggleAutostart(enable) {
+  const res = await gp.setAutostart(enable);
+  if (res) toast(enable ? 'Démarrage automatique activé' : 'Démarrage automatique désactivé', 'success');
+  else toast('Erreur', 'error');
+}
+
+async function toggleDefender(disable) {
+  const chk = document.getElementById('chk-defender');
+  if (disable) {
+    const res = await gp.disableDefender();
+    if (res.success) {
+      toast('Windows Defender désactivé — GuardPilot est votre seul antivirus', 'success');
+      await gp.logAction({ type: 'DEFENDER_DISABLED', desc: 'Protection temps réel Windows Defender désactivée' });
+    } else {
+      toast('Impossible de désactiver Defender — désactivez d\'abord la Protection contre les falsifications', 'error');
+      if (chk) chk.checked = false;
+    }
+  } else {
+    const res = await gp.enableDefender();
+    if (res.success) {
+      toast('Windows Defender réactivé', 'success');
+      await gp.logAction({ type: 'DEFENDER_ENABLED', desc: 'Protection temps réel Windows Defender réactivée' });
+    } else {
+      toast('Erreur lors de la réactivation', 'error');
+      if (chk) chk.checked = true;
+    }
+  }
+  setTimeout(() => renderSettings(), 1000);
+}
+
 // ── Boot ─────────────────────────────────────────────────────────────────────
 async function boot() {
   await new Promise(r => setTimeout(r, 1200));
@@ -1567,6 +1659,11 @@ async function boot() {
 
   // Load exclusions into state
   State.exclusions = await gp.getExclusions();
+
+  // Listen for tray actions (quick-scan triggered from systray)
+  gp.onTrayAction((action) => {
+    if (action === 'quick-scan') startQuickScan();
+  });
 
   renderShell();
   navTo('dashboard');

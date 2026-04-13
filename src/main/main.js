@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage } = require('electron');
 const { Worker } = require('worker_threads');
 const path = require('path');
 const fs   = require('fs');
@@ -588,6 +588,90 @@ ipcMain.on('win-close', () => mainWindow?.close());
 // Disable "Not Responding" hang detection — scan worker does heavy I/O
 app.commandLine.appendSwitch('disable-hang-monitor');
 
+// ── Systray ───────────────────────────────────────────────────────────────────
+let tray = null;
+const ICON_PATH = path.join(__dirname, '../../assets/icon.ico');
+
+function buildTrayMenu() {
+  const rtActive = (() => { try { return getRealtime().isActive?.() ?? store.get('realtimeEnabled', true); } catch(e) { return false; } })();
+  return Menu.buildFromTemplate([
+    { label: '🛡️  GuardPilot Pro', enabled: false },
+    { type: 'separator' },
+    { label: '🖥️  Ouvrir GuardPilot', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
+    { type: 'separator' },
+    { label: rtActive ? '✅  Protection temps réel : Active' : '❌  Protection temps réel : Inactive', enabled: false },
+    { label: rtActive ? 'Désactiver la protection' : 'Activer la protection', click: () => {
+      try {
+        if (rtActive) {
+          getRealtime().stopRealtime();
+          store.set('realtimeEnabled', false);
+        } else {
+          getRealtime().startRealtime(
+            (threat) => mainWindow?.webContents.send('realtime-threat', threat),
+            (activity) => mainWindow?.webContents.send('realtime-activity', activity)
+          );
+          store.set('realtimeEnabled', true);
+        }
+      } catch(e) {}
+      if (tray) tray.setContextMenu(buildTrayMenu());
+    }},
+    { type: 'separator' },
+    { label: '⚡  Scan rapide', click: () => { mainWindow?.show(); mainWindow?.webContents.send('tray-action', 'quick-scan'); } },
+    { type: 'separator' },
+    { label: '❌  Quitter', click: () => { app.isQuitting = true; app.quit(); } },
+  ]);
+}
+
+function createTray() {
+  tray = new Tray(ICON_PATH);
+  tray.setToolTip('GuardPilot Pro — Protection active');
+  tray.setContextMenu(buildTrayMenu());
+  tray.on('click', () => { mainWindow?.show(); mainWindow?.focus(); });
+  tray.on('double-click', () => { mainWindow?.show(); mainWindow?.focus(); });
+}
+
+// ── Auto-start IPC ─────────────────────────────────────────────────────────────
+ipcMain.handle('get-autostart', () => app.getLoginItemSettings().openAtLogin);
+ipcMain.handle('set-autostart', (_, enable) => {
+  app.setLoginItemSettings({ openAtLogin: enable, openAsHidden: true, name: 'GuardPilot Pro' });
+  store.set('autostart', enable);
+  return true;
+});
+
+// ── Windows Defender IPC ───────────────────────────────────────────────────────
+const { promisify } = require('util');
+const execAsyncSys = promisify(require('child_process').exec);
+
+ipcMain.handle('disable-defender', async () => {
+  try {
+    await execAsyncSys(
+      `powershell -NonInteractive -Command "Set-MpPreference -DisableRealtimeMonitoring $true"`,
+      { timeout: 10000 }
+    );
+    return { success: true };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
+ipcMain.handle('enable-defender', async () => {
+  try {
+    await execAsyncSys(
+      `powershell -NonInteractive -Command "Set-MpPreference -DisableRealtimeMonitoring $false"`,
+      { timeout: 10000 }
+    );
+    return { success: true };
+  } catch(e) { return { success: false, error: e.message }; }
+});
+
+ipcMain.handle('get-defender-realtime', async () => {
+  try {
+    const { stdout } = await execAsyncSys(
+      `powershell -NonInteractive -Command "(Get-MpPreference).DisableRealtimeMonitoring"`,
+      { encoding: 'utf8', timeout: 8000 }
+    );
+    return { disabled: stdout.trim() === 'True' };
+  } catch(e) { return { disabled: false }; }
+});
+
 // ── Main window ────────────────────────────────────────────────────────────────
 let mainWindow;
 app.whenReady().then(() => {
@@ -595,22 +679,36 @@ app.whenReady().then(() => {
     width:1340, height:860, minWidth:1100, minHeight:680,
     frame:false, backgroundColor:'#0A0F1E',
     webPreferences: { preload:path.join(__dirname,'preload.js'), contextIsolation:true, nodeIntegration:false },
-    icon: path.join(__dirname,'../../assets/icon.ico'),
+    icon: ICON_PATH,
     show:false,
   });
   mainWindow.loadFile(path.join(__dirname,'../renderer/index.html'));
   mainWindow.once('ready-to-show', () => {
+    // Apply autostart setting on first launch
+    if (store.get('autostart', false)) {
+      app.setLoginItemSettings({ openAtLogin: true, openAsHidden: true, name: 'GuardPilot Pro' });
+    }
     mainWindow.show();
+    createTray();
     // Auto-start real-time if enabled
     if (store.get('realtimeEnabled', true)) {
       try {
         getRealtime().startRealtime(
-          (threat) => mainWindow?.webContents.send('realtime-threat', threat),
+          (threat) => { mainWindow?.webContents.send('realtime-threat', threat); if (tray) tray.setContextMenu(buildTrayMenu()); },
           (activity) => mainWindow?.webContents.send('realtime-activity', activity)
         );
       } catch(e) {}
     }
   });
+  // Hide to tray instead of closing
+  mainWindow.on('close', (e) => {
+    if (!app.isQuitting) {
+      e.preventDefault();
+      mainWindow.hide();
+      tray?.displayBalloon?.({ title: 'GuardPilot Pro', content: 'GuardPilot continue de protéger votre PC en arrière-plan.', iconType: 'info' });
+    }
+  });
   mainWindow.on('closed', () => { try { getRealtime().stopRealtime(); } catch(e) {} });
 });
-app.on('window-all-closed', () => app.quit());
+app.on('window-all-closed', () => { if (app.isQuitting) app.quit(); });
+app.on('before-quit', () => { app.isQuitting = true; });

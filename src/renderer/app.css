@@ -225,3 +225,11 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);height:100vh
 
 /* ── Drag & drop zone ───────────────────────────────────────────────────────── */
 .drag-over::after{content:'Glissez vos fichiers ici';position:fixed;inset:0;background:rgba(59,130,246,0.15);border:3px dashed var(--blue);border-radius:var(--r-lg);display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;color:var(--blue);z-index:999;pointer-events:none}
+
+/* ── Toggle switch ───────────────────────────────────────────────────────────── */
+.toggle-switch{position:relative;display:inline-block;width:48px;height:26px;flex-shrink:0}
+.toggle-switch input{opacity:0;width:0;height:0}
+.toggle-slider{position:absolute;cursor:pointer;inset:0;background:var(--bg4);border-radius:26px;transition:.3s}
+.toggle-slider::before{content:'';position:absolute;width:20px;height:20px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.3s}
+.toggle-switch input:checked + .toggle-slider{background:var(--blue)}
+.toggle-switch input:checked + .toggle-slider::before{transform:translateX(22px)}
