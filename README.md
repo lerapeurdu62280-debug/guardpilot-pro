@@ -3,38 +3,41 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.0-059669?style=flat-square" alt="version"/>
+  <img src="https://img.shields.io/badge/version-1.2.0-059669?style=flat-square" alt="version"/>
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-2563EB?style=flat-square&logo=windows" alt="platform"/>
   <img src="https://img.shields.io/badge/licence-Commerciale%2019%E2%82%AC-DC2626?style=flat-square" alt="licence"/>
   <img src="https://img.shields.io/badge/essai-30%20jours%20gratuit-F59E0B?style=flat-square" alt="essai"/>
-  <img src="https://img.shields.io/badge/moteur-Custom%20%2B%20Defender-8B5CF6?style=flat-square" alt="engine"/>
+  <img src="https://img.shields.io/badge/moteur-GuardPilot%20Engine-8B5CF6?style=flat-square" alt="engine"/>
 </p>
 
 ---
 
-> **Antivirus & Anti-Malware nouvelle génération** — Protection temps réel, moteur de détection custom, intégration Windows Defender, analyse comportementale, audit réseau et registre. Conçu pour les techniciens informatiques.
+> **Antivirus & Anti-Malware nouvelle génération** — Protection temps réel, moteur de détection custom, base de signatures mise à jour, analyse comportementale, audit réseau et registre. Conçu pour les techniciens informatiques.
 
 ---
 
 ## ✨ Fonctionnalités
 
 ### 🛡️ Moteur de détection multi-couches
-- **Base de hashes** — Détection de malwares connus par empreinte SHA256
+- **Base de signatures** — 100+ hashes de malwares connus (Mimikatz, WannaCry, LockBit, Emotet…)
+- **Mise à jour des signatures** — Mise à jour en un clic depuis le cloud GuardPilot
 - **Analyse entropique** — Détection de fichiers packés/chiffrés (technique avancée)
 - **Scan de chaînes** — Recherche de patterns malveillants dans les exécutables et scripts
 - **Détection d'extensions** — Ransomware, trojans, droppers dans les dossiers suspects
-- **Intégration Windows Defender** — Exploitation du moteur Microsoft en temps réel
+- **Score de risque** — Chaque menace reçoit un score de 0 à 100
 
 ### ⚡ Protection temps réel
 - Surveillance des dossiers critiques (Temp, Downloads, Desktop, Démarrage)
 - Alerte instantanée à chaque nouveau fichier suspect
+- Notifications Windows natives
 - Monitoring de création de fichiers exécutables
 
 ### 🔍 Scanner complet
 - **Scan rapide** — Zones critiques en 1-2 minutes
-- **Scan complet** — Tous les disques détectés
-- **Scan personnalisé** — Dossier au choix
+- **Scan complet** — Tous les disques détectés (interface fluide grâce aux Worker Threads)
+- **Scan personnalisé** — Dossier au choix ou glisser-déposer
 - Rapport détaillé avec niveau de sévérité (CRITIQUE / ÉLEVÉ / MOYEN)
+- Export PDF et Word automatique après chaque scan
 
 ### 📋 Audit Registre Windows
 - Analyse des 5 clés Run/RunOnce (HKCU + HKLM)
@@ -51,8 +54,8 @@
 - Identification de processus suspects avec accès réseau
 - Vue en temps réel des connexions établies
 
-### 🔐 Vérification de sécurité Windows
-- État Windows Defender (antivirus, temps réel, signatures)
+### 🔐 Vérification de sécurité
+- Moteur GuardPilot (signatures chargées, version)
 - État du pare-feu Windows
 - UAC activé/désactivé
 - Ancienneté des mises à jour Windows
@@ -63,9 +66,14 @@
 - Isolation des fichiers malveillants (renommage + déplacement sécurisé)
 - Restauration ou suppression définitive
 
-### 📅 Historique
+### 📊 Statistiques & Historique
 - Journal de tous les scans effectués
-- Nombre de menaces par scan
+- Graphique des menaces sur 6 mois
+- Journal d'actions (traçabilité complète)
+
+### ⏰ Planification
+- Scans automatiques programmables (quotidien, hebdomadaire…)
+- Exclusions de chemins
 
 ---
 
@@ -90,7 +98,7 @@
 
 ## 🚀 Installation
 
-1. Téléchargez `GuardPilot_Pro_Setup_1.0.0.exe`
+1. Téléchargez `GuardPilot_Pro_Setup_1.2.0.exe` depuis les [Releases](../../releases)
 2. Exécutez l'installateur en tant qu'administrateur
 3. Lancez **GuardPilot Pro** — la protection temps réel démarre automatiquement
 
